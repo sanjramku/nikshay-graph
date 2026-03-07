@@ -1,0 +1,14 @@
+python-dotenv
+faker
+numpy
+gremlinpython
+azure-ai-textanalytics
+azure-communication-sms
+azure-eventhub
+networkx
+streamlit
+pandas
+plotly
+torch
+torch-geometric
+requests

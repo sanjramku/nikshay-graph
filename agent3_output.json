@@ -1,0 +1,407 @@
+{
+  "visit_list": [
+    {
+      "rank": 1,
+      "patient_id": "NIK-100005",
+      "risk_score": 0.9764,
+      "risk_level": "HIGH",
+      "treatment_week": 25,
+      "phase": "Continuation",
+      "days_missed": 0,
+      "asha_id": "ASHA-TN-001",
+      "block": "Tondiarpet",
+      "top_factors": {
+        "Continuation phase": 2.3,
+        "Prior LTFU/TB history": 2.1,
+        "Age 34 (high-risk group 20-39)": 2.07
+      },
+      "score_composition": {
+        "composite_score": 0.6594,
+        "tgn_component": 0.2346,
+        "bbn_component": 0.3087,
+        "asha_component": 0.1161,
+        "tgn_weight": 0.4,
+        "bbn_weight": 0.4,
+        "asha_weight": 0.2,
+        "bbn_status": "active"
+      },
+      "asha_explanation": "Visit patient 100005 \u2014 no contact for 7 days \u2014 may be disengaging.",
+      "officer_explanation": "Patient NIK-100005 \u2014 HIGH risk (score 0.98), Week 25 of treatment (Continuation). Threshold at this stage: HIGH > 0.55. Primary driver: continuation phase. Secondary: prior ltfu/tb history. Score components: patient factors 40%, clinical prior 40%, ASHA workload 20%. BBN prior: active.",
+      "safety_passed": true
+    },
+    {
+      "rank": 2,
+      "patient_id": "NIK-100043",
+      "risk_score": 0.9689,
+      "risk_level": "HIGH",
+      "treatment_week": 24,
+      "phase": "Continuation",
+      "days_missed": 2,
+      "asha_id": "ASHA-TN-003",
+      "block": "Tondiarpet",
+      "top_factors": {
+        "Continuation phase": 2.3,
+        "Age 26 (high-risk group 20-39)": 2.07,
+        "Alcohol use": 1.92
+      },
+      "score_composition": {
+        "composite_score": 0.6629,
+        "tgn_component": 0.2326,
+        "bbn_component": 0.3106,
+        "asha_component": 0.1197,
+        "tgn_weight": 0.4,
+        "bbn_weight": 0.4,
+        "asha_weight": 0.2,
+        "bbn_status": "active"
+      },
+      "asha_explanation": "Visit patient 100043 \u2014 risk factor: continuation phase.",
+      "officer_explanation": "Patient NIK-100043 \u2014 HIGH risk (score 0.97), Week 24 of treatment (Continuation). Threshold at this stage: HIGH > 0.55. Primary driver: continuation phase. Secondary: age 26 (high-risk group 20-39). Score components: patient factors 40%, clinical prior 40%, ASHA workload 20%. BBN prior: active.",
+      "safety_passed": true
+    },
+    {
+      "rank": 3,
+      "patient_id": "NIK-100012",
+      "risk_score": 0.9218,
+      "risk_level": "HIGH",
+      "treatment_week": 25,
+      "phase": "Continuation",
+      "days_missed": 0,
+      "asha_id": "ASHA-TN-001",
+      "block": "Tondiarpet",
+      "top_factors": {
+        "Continuation phase": 2.3,
+        "Prior LTFU/TB history": 2.1,
+        "No nutritional support": 1.6
+      },
+      "score_composition": {
+        "composite_score": 0.6225,
+        "tgn_component": 0.2281,
+        "bbn_component": 0.2783,
+        "asha_component": 0.1161,
+        "tgn_weight": 0.4,
+        "bbn_weight": 0.4,
+        "asha_weight": 0.2,
+        "bbn_status": "active"
+      },
+      "asha_explanation": "Visit patient 100012 \u2014 no contact for 14 days \u2014 may be disengaging.",
+      "officer_explanation": "Patient NIK-100012 \u2014 HIGH risk (score 0.92), Week 25 of treatment (Continuation). Threshold at this stage: HIGH > 0.55. Primary driver: continuation phase. Secondary: prior ltfu/tb history. Score components: patient factors 40%, clinical prior 40%, ASHA workload 20%. BBN prior: active.",
+      "safety_passed": true
+    },
+    {
+      "rank": 4,
+      "patient_id": "NIK-100042",
+      "risk_score": 0.8824,
+      "risk_level": "HIGH",
+      "treatment_week": 13,
+      "phase": "Continuation",
+      "days_missed": 14,
+      "asha_id": "ASHA-TN-003",
+      "block": "Tondiarpet",
+      "top_factors": {
+        "14 days since last dose (CRITICAL)": 6.5,
+        "Continuation phase": 2.3,
+        "Age 20 (high-risk group 20-39)": 2.07
+      },
+      "score_composition": {
+        "composite_score": 0.7059,
+        "tgn_component": 0.2423,
+        "bbn_component": 0.3438,
+        "asha_component": 0.1197,
+        "tgn_weight": 0.4,
+        "bbn_weight": 0.4,
+        "asha_weight": 0.2,
+        "bbn_status": "active"
+      },
+      "asha_explanation": "Visit patient 100042 \u2014 has not taken medicine for 14 days.",
+      "officer_explanation": "Patient NIK-100042 \u2014 HIGH risk (score 0.88), Week 13 of treatment (Continuation). Threshold at this stage: HIGH > 0.65. Primary driver: 14 days since last dose (critical). Secondary: continuation phase. Score components: patient factors 40%, clinical prior 40%, ASHA workload 20%. BBN prior: active.",
+      "safety_passed": true
+    },
+    {
+      "rank": 5,
+      "patient_id": "NIK-100007",
+      "risk_score": 0.8538,
+      "risk_level": "HIGH",
+      "treatment_week": 25,
+      "phase": "Intensive",
+      "days_missed": 0,
+      "asha_id": "ASHA-TN-001",
+      "block": "Tondiarpet",
+      "top_factors": {
+        "Prior LTFU/TB history": 2.1,
+        "Age 26 (high-risk group 20-39)": 2.07,
+        "Alcohol use": 1.92
+      },
+      "score_composition": {
+        "composite_score": 0.5766,
+        "tgn_component": 0.2294,
+        "bbn_component": 0.2311,
+        "asha_component": 0.1161,
+        "tgn_weight": 0.4,
+        "bbn_weight": 0.4,
+        "asha_weight": 0.2,
+        "bbn_status": "active"
+      },
+      "asha_explanation": "Visit patient 100007 \u2014 has dropped out of treatment before.",
+      "officer_explanation": "Patient NIK-100007 \u2014 HIGH risk (score 0.85), Week 25 of treatment (Intensive). Threshold at this stage: HIGH > 0.55. Primary driver: prior ltfu/tb history. Secondary: age 26 (high-risk group 20-39). Score components: patient factors 40%, clinical prior 40%, ASHA workload 20%. BBN prior: active.",
+      "safety_passed": true
+    },
+    {
+      "rank": 6,
+      "patient_id": "NIK-100078",
+      "risk_score": 0.8493,
+      "risk_level": "HIGH",
+      "treatment_week": 13,
+      "phase": "Continuation",
+      "days_missed": 1,
+      "asha_id": "ASHA-TN-004",
+      "block": "Tondiarpet",
+      "top_factors": {
+        "Drug use": 2.4,
+        "Continuation phase": 2.3,
+        "Age 31 (high-risk group 20-39)": 2.07
+      },
+      "score_composition": {
+        "composite_score": 0.6794,
+        "tgn_component": 0.2338,
+        "bbn_component": 0.3291,
+        "asha_component": 0.1165,
+        "tgn_weight": 0.4,
+        "bbn_weight": 0.4,
+        "asha_weight": 0.2,
+        "bbn_status": "active"
+      },
+      "asha_explanation": "Visit patient 100078 \u2014 risk factor: drug use.",
+      "officer_explanation": "Patient NIK-100078 \u2014 HIGH risk (score 0.85), Week 13 of treatment (Continuation). Threshold at this stage: HIGH > 0.65. Primary driver: drug use. Secondary: continuation phase. Score components: patient factors 40%, clinical prior 40%, ASHA workload 20%. BBN prior: active.",
+      "safety_passed": true
+    },
+    {
+      "rank": 7,
+      "patient_id": "NIK-100020",
+      "risk_score": 0.8492,
+      "risk_level": "HIGH",
+      "treatment_week": 21,
+      "phase": "Continuation",
+      "days_missed": 0,
+      "asha_id": "ASHA-TN-001",
+      "block": "Tondiarpet",
+      "top_factors": {
+        "Drug use": 2.4,
+        "Continuation phase": 2.3,
+        "Distance 16.4km (>10km)": 2.1
+      },
+      "score_composition": {
+        "composite_score": 0.6049,
+        "tgn_component": 0.2357,
+        "bbn_component": 0.253,
+        "asha_component": 0.1161,
+        "tgn_weight": 0.4,
+        "bbn_weight": 0.4,
+        "asha_weight": 0.2,
+        "bbn_status": "active"
+      },
+      "asha_explanation": "Visit patient 100020 \u2014 no contact for 7 days \u2014 may be disengaging.",
+      "officer_explanation": "Patient NIK-100020 \u2014 HIGH risk (score 0.85), Week 21 of treatment (Continuation). Threshold at this stage: HIGH > 0.55. Primary driver: drug use. Secondary: continuation phase. Score components: patient factors 40%, clinical prior 40%, ASHA workload 20%. BBN prior: active.",
+      "safety_passed": true
+    },
+    {
+      "rank": 8,
+      "patient_id": "NIK-100058",
+      "risk_score": 0.84,
+      "risk_level": "HIGH",
+      "treatment_week": 26,
+      "phase": "Continuation",
+      "days_missed": 0,
+      "asha_id": "ASHA-TN-003",
+      "block": "Tondiarpet",
+      "top_factors": {
+        "Continuation phase": 2.3,
+        "Prior LTFU/TB history": 2.1,
+        "No nutritional support": 1.6
+      },
+      "score_composition": {
+        "composite_score": 0.56,
+        "tgn_component": 0.235,
+        "bbn_component": 0.2053,
+        "asha_component": 0.1197,
+        "tgn_weight": 0.4,
+        "bbn_weight": 0.4,
+        "asha_weight": 0.2,
+        "bbn_status": "active"
+      },
+      "asha_explanation": "Visit patient 100058 \u2014 has dropped out of treatment before.",
+      "officer_explanation": "Patient NIK-100058 \u2014 HIGH risk (score 0.84), Week 26 of treatment (Continuation). Threshold at this stage: HIGH > 0.55. Primary driver: continuation phase. Secondary: prior ltfu/tb history. Score components: patient factors 40%, clinical prior 40%, ASHA workload 20%. BBN prior: active.",
+      "safety_passed": true
+    },
+    {
+      "rank": 9,
+      "patient_id": "NIK-100092",
+      "risk_score": 0.8272,
+      "risk_level": "HIGH",
+      "treatment_week": 22,
+      "phase": "Intensive",
+      "days_missed": 0,
+      "asha_id": "ASHA-TN-005",
+      "block": "Tondiarpet",
+      "top_factors": {
+        "Age 29 (high-risk group 20-39)": 2.07,
+        "Alcohol use": 1.92,
+        "No nutritional support": 1.6
+      },
+      "score_composition": {
+        "composite_score": 0.5813,
+        "tgn_component": 0.2333,
+        "bbn_component": 0.2407,
+        "asha_component": 0.1073,
+        "tgn_weight": 0.4,
+        "bbn_weight": 0.4,
+        "asha_weight": 0.2,
+        "bbn_status": "active"
+      },
+      "asha_explanation": "Visit patient 100092 \u2014 no contact for 7 days \u2014 may be disengaging.",
+      "officer_explanation": "Patient NIK-100092 \u2014 HIGH risk (score 0.83), Week 22 of treatment (Intensive). Threshold at this stage: HIGH > 0.55. Primary driver: age 29 (high-risk group 20-39). Secondary: alcohol use. Score components: patient factors 40%, clinical prior 40%, ASHA workload 20%. BBN prior: active.",
+      "safety_passed": true
+    },
+    {
+      "rank": 10,
+      "patient_id": "NIK-100006",
+      "risk_score": 0.8248,
+      "risk_level": "HIGH",
+      "treatment_week": 25,
+      "phase": "Continuation",
+      "days_missed": 0,
+      "asha_id": "ASHA-TN-001",
+      "block": "Tondiarpet",
+      "top_factors": {
+        "Continuation phase": 2.3,
+        "Age 24 (high-risk group 20-39)": 2.07,
+        "Distance 6.2km (5-10km)": 1.6
+      },
+      "score_composition": {
+        "composite_score": 0.557,
+        "tgn_component": 0.2402,
+        "bbn_component": 0.2007,
+        "asha_component": 0.1161,
+        "tgn_weight": 0.4,
+        "bbn_weight": 0.4,
+        "asha_weight": 0.2,
+        "bbn_status": "active"
+      },
+      "asha_explanation": "Visit patient 100006 \u2014 no contact for 14 days \u2014 may be disengaging.",
+      "officer_explanation": "Patient NIK-100006 \u2014 HIGH risk (score 0.82), Week 25 of treatment (Continuation). Threshold at this stage: HIGH > 0.55. Primary driver: continuation phase. Secondary: age 24 (high-risk group 20-39). Score components: patient factors 40%, clinical prior 40%, ASHA workload 20%. BBN prior: active.",
+      "safety_passed": true
+    }
+  ],
+  "screening_list": [
+    {
+      "contact_id": "CONTACT_Nachiket_Gara",
+      "name": "Nachiket Gara",
+      "age": 9,
+      "rel": "Household",
+      "vulnerability": 1.5,
+      "source_patient": "NIK-100059",
+      "screening_priority": 0.03223157,
+      "screening_reason": "Screen Nachiket Gara (age 9, Household) \u2014 unscreened contact of a high-risk patient.",
+      "rank": 1
+    },
+    {
+      "contact_id": "CONTACT_Dalbir_Narasimhan",
+      "name": "Dalbir Narasimhan",
+      "age": 73,
+      "rel": "Household",
+      "vulnerability": 2.25,
+      "source_patient": "NIK-100028",
+      "screening_priority": 0.02663882,
+      "screening_reason": "Screen Dalbir Narasimhan (age 73, Household) \u2014 unscreened contact of a high-risk patient.",
+      "rank": 2
+    },
+    {
+      "contact_id": "CONTACT_Inaya_Atwal",
+      "name": "Inaya Atwal",
+      "age": 61,
+      "rel": "Workplace",
+      "vulnerability": 1.5,
+      "source_patient": "NIK-100003",
+      "screening_priority": 0.02183046,
+      "screening_reason": "Screen Inaya Atwal (age 61, Workplace) \u2014 unscreened contact of a high-risk patient.",
+      "rank": 3
+    },
+    {
+      "contact_id": "CONTACT_Frado_Verma",
+      "name": "Frado Verma",
+      "age": 5,
+      "rel": "Household",
+      "vulnerability": 2.25,
+      "source_patient": "NIK-100081",
+      "screening_priority": 0.01970826,
+      "screening_reason": "Screen Frado Verma (age 5, Household) \u2014 unscreened contact of a high-risk patient.",
+      "rank": 4
+    },
+    {
+      "contact_id": "CONTACT_Osha_Badami",
+      "name": "Osha Badami",
+      "age": 8,
+      "rel": "Household",
+      "vulnerability": 2.25,
+      "source_patient": "NIK-100062",
+      "screening_priority": 0.01504906,
+      "screening_reason": "Screen Osha Badami (age 8, Household) \u2014 unscreened contact of a high-risk patient.",
+      "rank": 5
+    },
+    {
+      "contact_id": "CONTACT_Faqid_Om",
+      "name": "Faqid Om",
+      "age": 69,
+      "rel": "Household",
+      "vulnerability": 1.5,
+      "source_patient": "NIK-100086",
+      "screening_priority": 0.01486417,
+      "screening_reason": "Screen Faqid Om (age 69, Household) \u2014 unscreened contact of a high-risk patient.",
+      "rank": 6
+    },
+    {
+      "contact_id": "CONTACT_Chameli_Setty",
+      "name": "Chameli Setty",
+      "age": 55,
+      "rel": "Workplace",
+      "vulnerability": 1.5,
+      "source_patient": "NIK-100049",
+      "screening_priority": 0.01474153,
+      "screening_reason": "Screen Chameli Setty (age 55, Workplace) \u2014 unscreened contact of a high-risk patient.",
+      "rank": 7
+    },
+    {
+      "contact_id": "CONTACT_Sai_Dugal",
+      "name": "Sai Dugal",
+      "age": 9,
+      "rel": "Household",
+      "vulnerability": 1.5,
+      "source_patient": "NIK-100100",
+      "screening_priority": 0.01467727,
+      "screening_reason": "Screen Sai Dugal (age 9, Household) \u2014 unscreened contact of a high-risk patient.",
+      "rank": 8
+    },
+    {
+      "contact_id": "CONTACT_Bina_Parekh",
+      "name": "Bina Parekh",
+      "age": 51,
+      "rel": "Household",
+      "vulnerability": 1.0,
+      "source_patient": "NIK-100073",
+      "screening_priority": 0.0131638,
+      "screening_reason": "Screen Bina Parekh (age 51, Household) \u2014 unscreened contact of a high-risk patient.",
+      "rank": 9
+    },
+    {
+      "contact_id": "CONTACT_Anay_Chowdhury",
+      "name": "Anay Chowdhury",
+      "age": 12,
+      "rel": "Household",
+      "vulnerability": 1.5,
+      "source_patient": "NIK-100100",
+      "screening_priority": 0.00978484,
+      "screening_reason": "Screen Anay Chowdhury (age 12, Household) \u2014 unscreened contact of a high-risk patient.",
+      "rank": 10
+    }
+  ],
+  "systemic_alerts": []
+}
