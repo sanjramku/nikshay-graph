@@ -48,6 +48,8 @@ def parse_args():
     p = argparse.ArgumentParser(description="Nikshay-Graph pipeline runner")
     p.add_argument("--skip-cosmos", action="store_true",
                    help="Skip all Cosmos DB operations")
+    p.add_argument("--overnight", action="store_true",
+                   help="Run overnight NER batch processor on pending ASHA notes and exit")
     p.add_argument("--skip-comms",  action="store_true",
                    help="No-op (communications now go to dashboard, not WhatsApp/SMS)")
     p.add_argument("--limit",       type=int, default=100,
@@ -56,6 +58,11 @@ def parse_args():
                    help="Regenerate synthetic dataset before running pipeline")
     p.add_argument("--confirmed-cases", type=int, default=0,
                    help="Number of confirmed real dropout cases (affects BBN weight)")
+    p.add_argument("--bbn-frequency", type=str, default=None,
+                   choices=["monthly", "quarterly", "biannual", "annual"],
+                   help="Override BBN update cycle frequency (default: biannual / 6 months)")
+    p.add_argument("--force-bbn-update", action="store_true",
+                   help="Force a BBN OR update regardless of schedule (for testing)")
     return p.parse_args()
 
 
@@ -331,11 +338,25 @@ def run_stage5(visit_list: list, screening_list: list,
         patients        = patients,
     )
 
-    # Serialise audio paths (may be temp file paths or None)
+    # Copy audio files to stable data/audio/ folder so paths survive past this run.
+    # Azure Speech writes to a temp path that may be cleaned up — persist it now.
+    import shutil
+    audio_dir = Path("data/audio")
+    audio_dir.mkdir(parents=True, exist_ok=True)
+
     serialisable = {}
     for asha_id, b in briefing_output["asha_briefings"].items():
-        serialisable[asha_id] = {k: v for k, v in b.items() if k != "audio_path"}
-        serialisable[asha_id]["audio_available"] = b.get("audio_path") is not None
+        entry     = {k: v for k, v in b.items() if k != "audio_path"}
+        tmp_audio = b.get("audio_path")
+        if tmp_audio and Path(tmp_audio).exists():
+            dest = audio_dir / f"{asha_id}.mp3"
+            shutil.copy2(tmp_audio, dest)
+            entry["audio_path"]      = str(dest)
+            entry["audio_available"] = True
+        else:
+            entry["audio_path"]      = None
+            entry["audio_available"] = False
+        serialisable[asha_id] = entry
 
     with open("briefings_output.json", "w") as f:
         json.dump({
@@ -353,6 +374,35 @@ def run_stage5(visit_list: list, screening_list: list,
 def main():
     args = parse_args()
 
+    # Overnight NER batch — runs and exits, skips the rest of the pipeline
+    if args.overnight:
+        print("=" * 60)
+        print("Nikshay-Graph — Overnight NER Batch Processor")
+        print("=" * 60)
+        gc = None
+        producer = None
+        if not args.skip_cosmos:
+            try:
+                from cosmos_client import get_client, health_check
+                if health_check():
+                    gc = get_client()
+            except Exception:
+                pass
+        try:
+            from stage1_nlp import get_eventhub_producer
+            producer = get_eventhub_producer()
+        except Exception:
+            pass
+        from stage1_nlp import process_overnight_notes
+        results = process_overnight_notes(gc, producer)
+        print(f"\nOvernight processing complete:")
+        print(f"  Notes processed:   {results.get('processed', 0)}")
+        print(f"  New contacts:      {results.get('contacts_added', 0)}")
+        print(f"  Symptoms flagged:  {results.get('symptoms_flagged', 0)}")
+        print(f"  Tier changes:      {results.get('tier_changes', 0)}")
+        print(f"  Errors:            {len(results.get('errors', []))}")
+        return
+
     print("=" * 60)
     print("Nikshay-Graph Pipeline")
     print(f"  Records:          {args.limit}")
@@ -362,6 +412,29 @@ def main():
 
     # Stage 0 — Data
     patients = load_or_generate_dataset(args.generate, args.limit)
+
+    # ── BBN Schedule Check ────────────────────────────────────────────────────
+    # MUST run before Stage 3 (scoring). Locks OR weights for this entire run.
+    # Every patient scored in this run will use exactly the same weights —
+    # no mid-run weight changes regardless of how many dropouts are recorded
+    # by the District Officer during the run.
+    print("\n=== BBN Weight Schedule Check ===")
+    from stage3_score import check_and_run_scheduled_update, BBN_UPDATE_FREQUENCY
+    if args.force_bbn_update:
+        # Override schedule for testing — set next_due to now
+        from stage3_score import load_bbn_schedule, save_bbn_schedule
+        from datetime import datetime, timezone
+        sched = load_bbn_schedule()
+        sched["next_due_date"] = datetime.now(timezone.utc).isoformat()
+        save_bbn_schedule(sched)
+        print("  [--force-bbn-update] Schedule overridden — update will run if cases exist")
+    bbn_status = check_and_run_scheduled_update(frequency=args.bbn_frequency)
+    print(f"  Update ran:      {bbn_status['update_ran']}")
+    print(f"  Weights source:  {bbn_status['weights_source']}")
+    print(f"  Next due:        {bbn_status['next_due_date'][:10] if bbn_status['next_due_date'] else 'not set'}")
+    if bbn_status["update_ran"]:
+        print(f"  ✓ {bbn_status['new_cases_used']} new cases used to update OR weights")
+    # ─────────────────────────────────────────────────────────────────────────
 
     # Stage 1 — NLP + Graph
     patients, asha_summaries, gc, producer = run_stage1(patients, args.skip_cosmos)

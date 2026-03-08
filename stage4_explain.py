@@ -76,53 +76,73 @@ def _get_first_name(patient_id: str) -> str:
 
 def generate_asha_explanation(record: dict) -> str:
     """
-    ASHA-facing explanation. Simple, under 20 words, actionable.
-    Format: "Visit [identifier] — [single most urgent reason]"
+    ASHA-facing explanation. Plain language, actionable, field-readable.
+    Format: "⚠ URGENT / VISIT TODAY / CHECK IN — [reason]. [one follow-up action]"
 
     Grounded entirely in actual record data — no LLM involved.
     """
-    identifier = _get_first_name(record["patient_id"])
-    reason     = _get_primary_reason(record)
-    return f"Visit patient {identifier} — {reason}."
+    missed  = record["adherence"]["days_since_last_dose"]
+    phase   = record["clinical"]["phase"]
+    risk    = record.get("risk_level", "MEDIUM")
+    regimen = record.get("clinical", {}).get("regimen", "")
+
+    # Urgency label
+    if risk == "HIGH" or missed >= 14:
+        urgency = "⚠ URGENT VISIT"
+    elif missed >= 7 or record.get("silence_event"):
+        urgency = "VISIT TODAY"
+    else:
+        urgency = "CHECK IN"
+
+    reason = _get_primary_reason(record)
+
+    # One concrete follow-up action based on the reason
+    if missed >= 7:
+        action = "Bring medicine directly to the patient."
+    elif record.get("silence_event"):
+        action = "Call or visit — patient has gone quiet."
+    elif record["adherence"].get("prior_lfu_history"):
+        action = "Remind them treatment must be completed fully."
+    elif regimen == "DR_TB":
+        action = "DR-TB patient — do not miss this visit."
+    elif not record["operational"].get("welfare_enrolled"):
+        action = "Help them enrol in Nikshay Poshan Yojana (₹500/month)."
+    else:
+        action = "Check that they are taking medicine daily."
+
+    return f"{urgency} — {reason}. {action}"
 
 
 def generate_officer_explanation(record: dict) -> str:
     """
-    District Officer-facing explanation. More detailed, includes score components.
-    Format: "Patient [ID] — [tier] risk, Week [N]. Primary: [reason]. Secondary: [reason]."
+    District Officer-facing explanation — structured fields, not a wall of text.
+    Returns a markdown-formatted string for the dashboard to render.
     """
     pid        = record["patient_id"]
     tier       = record.get("risk_level", "?")
     week       = record.get("treatment_week", "?")
     score      = record.get("risk_score", 0)
     phase      = record["clinical"]["phase"]
+    missed     = record["adherence"]["days_since_last_dose"]
     threshold  = record.get("thresholds", {})
     composition= record.get("score_composition", {})
-    factors    = list(record.get("top_factors", record.get("all_factors", {})).keys())
+    factors    = list(record.get("top_factors", record.get("all_factors", {})).items())
 
-    primary   = factors[0] if len(factors) > 0 else "unknown"
-    secondary = factors[1] if len(factors) > 1 else None
-
-    # Component breakdown — use model weights (sum to 100%), not raw contributions
     tgn_pct  = int(composition.get("tgn_weight",  0) * 100)
     bbn_pct  = int(composition.get("bbn_weight",  0) * 100)
     asha_pct = int(composition.get("asha_weight", 0) * 100)
 
-    bbn_note = f" BBN prior: {composition.get('bbn_status', 'active')}." if composition else ""
+    primary_name, primary_or = factors[0] if factors else ("unknown", 0)
+    secondary = f" · Secondary: {factors[1][0]} (OR {factors[1][1]:.2f}×)" if len(factors) > 1 else ""
 
+    nl = "\n\n"
     explanation = (
-        f"Patient {pid} — {tier} risk (score {score:.2f}), Week {week} of treatment ({phase}). "
-        f"Threshold at this stage: HIGH > {threshold.get('high', 0.65)}. "
-        f"Primary driver: {primary.lower()}. "
+        f"**Risk:** {tier} · **Score:** {score:.3f} · **Week:** {week} ({phase}){nl}"
+        f"**Days since last dose:** {missed} · "
+        f"**HIGH threshold this week:** >{threshold.get('high', 0.65)}{nl}"
+        f"**Primary driver:** {primary_name} (OR {primary_or:.2f}×){secondary}{nl}"
+        f"**Score breakdown:** TGN {tgn_pct}% · BBN prior {bbn_pct}% · ASHA load {asha_pct}%"
     )
-    if secondary:
-        explanation += f"Secondary: {secondary.lower()}. "
-    explanation += (
-        f"Score components: patient factors {tgn_pct}%, "
-        f"clinical prior {bbn_pct}%, "
-        f"ASHA workload {asha_pct}%.{bbn_note}"
-    )
-
     return explanation
 
 

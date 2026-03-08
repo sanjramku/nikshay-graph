@@ -5,6 +5,7 @@ gremlinpython
 azure-ai-textanalytics
 azure-communication-sms
 azure-eventhub
+azure-cognitiveservices-speech
 networkx
 streamlit
 pandas

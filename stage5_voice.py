@@ -296,7 +296,8 @@ def process_asha_dashboard_reply(gc, producer,
     if action == "done":
         event["event_type"] = "dose_confirmed"
         if gc:
-            writeback_dose_confirmed(gc, producer, patient_id, asha_id)
+            delta = writeback_dose_confirmed(gc, producer, patient_id, asha_id)
+            event["graph_delta"] = delta
         else:
             publish_event(producer, "dose_confirmed", asha_id, patient_id,
                           {"source": "dashboard"})
@@ -304,7 +305,8 @@ def process_asha_dashboard_reply(gc, producer,
     elif action == "could_not_visit":
         event["event_type"] = "dose_missed"
         if gc:
-            writeback_dose_missed(gc, producer, patient_id, asha_id)
+            delta = writeback_dose_missed(gc, producer, patient_id, asha_id)
+            event["graph_delta"] = delta
         else:
             publish_event(producer, "dose_missed", asha_id, patient_id,
                           {"source": "dashboard"})

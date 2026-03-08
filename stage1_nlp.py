@@ -272,47 +272,36 @@ def ingest_patient_node(gc, producer, record: dict):
     s_days   = record.get("silence_event", {}).get("duration_days", 0)
     mem_init = json.dumps([0.0] * 64)
 
-    # Build the full upsert query manually to handle the memory_vector init carefully
+    # Build the full upsert query manually to handle the memory_vector init carefully.
+    # CRITICAL: 'pk' (partition key) is IMMUTABLE in Cosmos DB Gremlin.
+    # It must ONLY appear in the addV() branch, NEVER in the unfold()/update branch.
+    # Setting pk on an existing vertex causes GraphSyntaxException code 597.
+    shared_props = (
+        f".property('risk_score',       {record['risk_score']})"
+        f".property('phase',            '{safe(record['clinical']['phase'])}')"
+        f".property('regimen',          '{safe(record['clinical'].get('regimen','Cat_I'))}')"
+        f".property('treatment_week',   {min(record['clinical']['total_treatment_days']//7,26)})"
+        f".property('days_missed',      {record['adherence']['days_since_last_dose']})"
+        f".property('adherence_rate',   {record['adherence']['adherence_rate_30d']})"
+        f".property('phase_adherence',  {record['adherence'].get('phase_adherence_rate', record['adherence']['adherence_rate_30d'])})"
+        f".property('distance_km',      {record['adherence']['distance_to_center_km']})"
+        f".property('silence',          {silence})"
+        f".property('silence_days',     {s_days})"
+        f".property('welfare_enrolled', {str(record['operational'].get('welfare_enrolled',False)).lower()})"
+        f".property('risk_velocity',    {record.get('risk_velocity',0.0)})"
+        f".property('asha_id',          '{safe(record['operational']['asha_id'])}')"
+        f".property('anm_id',           '{safe(record['operational'].get('anm_id',''))}')"
+        f".property('block',            '{safe(record['location']['block'])}')"
+        f".property('district',         '{safe(district)}')"
+    )
     run_query(gc,
         f"g.V('{safe(pid)}').fold().coalesce("
-        f"unfold()"
-        f".property('risk_score',       {record['risk_score']})"
-        f".property('phase',            '{safe(record['clinical']['phase'])}')"
-        f".property('regimen',          '{safe(record['clinical'].get('regimen','Cat_I'))}')"
-        f".property('treatment_week',   {min(record['clinical']['total_treatment_days']//7,26)})"
-        f".property('days_missed',      {record['adherence']['days_since_last_dose']})"
-        f".property('adherence_rate',   {record['adherence']['adherence_rate_30d']})"
-        f".property('phase_adherence',  {record['adherence'].get('phase_adherence_rate', record['adherence']['adherence_rate_30d'])})"
-        f".property('distance_km',      {record['adherence']['distance_to_center_km']})"
-        f".property('silence',          {silence})"
-        f".property('silence_days',     {s_days})"
-        f".property('welfare_enrolled', {str(record['operational'].get('welfare_enrolled',False)).lower()})"
-        f".property('risk_velocity',    {record.get('risk_velocity',0.0)})"
-        f".property('asha_id',          '{safe(record['operational']['asha_id'])}')"
-        f".property('anm_id',           '{safe(record['operational'].get('anm_id',''))}')"
-        f".property('block',            '{safe(record['location']['block'])}')"
-        f".property('district',         '{safe(district)}')"
-        f","
+        f"unfold(){shared_props},"
         f"addV('patient')"
-        f".property('id',               '{safe(pid)}')"
-        f".property('risk_score',       {record['risk_score']})"
-        f".property('phase',            '{safe(record['clinical']['phase'])}')"
-        f".property('regimen',          '{safe(record['clinical'].get('regimen','Cat_I'))}')"
-        f".property('treatment_week',   {min(record['clinical']['total_treatment_days']//7,26)})"
-        f".property('days_missed',      {record['adherence']['days_since_last_dose']})"
-        f".property('adherence_rate',   {record['adherence']['adherence_rate_30d']})"
-        f".property('phase_adherence',  {record['adherence'].get('phase_adherence_rate', record['adherence']['adherence_rate_30d'])})"
-        f".property('distance_km',      {record['adherence']['distance_to_center_km']})"
-        f".property('silence',          {silence})"
-        f".property('silence_days',     {s_days})"
-        f".property('welfare_enrolled', {str(record['operational'].get('welfare_enrolled',False)).lower()})"
-        f".property('risk_velocity',    {record.get('risk_velocity',0.0)})"
-        f".property('asha_id',          '{safe(record['operational']['asha_id'])}')"
-        f".property('anm_id',           '{safe(record['operational'].get('anm_id',''))}')"
-        f".property('block',            '{safe(record['location']['block'])}')"
-        f".property('district',         '{safe(district)}')"
-        f".property('memory_vector',    '{safe(mem_init)}')"
-        f".property('pk',               '{safe(district)}')"
+        f".property('id',            '{safe(pid)}')"
+        f".property('pk',            '{safe(district)}')"   # pk ONLY here
+        f".property('memory_vector', '{safe(mem_init)}')"
+        f"{shared_props}"
         f")"
     )
     publish_event(producer, "patient_upserted", pid, pid,
@@ -552,39 +541,136 @@ def ingest_welfare_edge(gc, producer, record: dict, scheme_id: str):
 
 # ── ASHA writeback functions (close the feedback loop) ────────────────────────
 
-def writeback_dose_confirmed(gc, producer, patient_id: str, asha_id: str):
+def writeback_dose_confirmed(gc, producer, patient_id: str, asha_id: str) -> dict:
     """
     ASHA tapped Done.
-    Resets days_missed to 0, clears silence, refreshes ASHA-Patient edge recency.
+    Resets days_missed/silence on patient node.
+    Recalculates assigned_to edge weight at full recency (days_since_visit=0).
+    Returns a delta dict describing what changed in the graph.
     """
+    # --- Patient node ---
     run_query(gc,
         f"g.V('{safe(patient_id)}')"
         f".property('days_missed', 0)"
         f".property('silence',     false)"
         f".property('silence_days', 0)"
     )
-    # Refresh edge recency — weight recalculated at max (full recency, use existing load)
+
+    # --- Read current edge state before update ---
+    old_weight_r     = run_query(gc,
+        f"g.V('{safe(asha_id)}').outE('assigned_to')"
+        f".where(inV().has('id', '{safe(patient_id)}'))"
+        f".values('weight')"
+    )
+    old_load_r       = run_query(gc,
+        f"g.V('{safe(asha_id)}').outE('assigned_to')"
+        f".where(inV().has('id', '{safe(patient_id)}'))"
+        f".values('load_score')"
+    )
+    old_days_r       = run_query(gc,
+        f"g.V('{safe(asha_id)}').outE('assigned_to')"
+        f".where(inV().has('id', '{safe(patient_id)}'))"
+        f".values('days_since_visit')"
+    )
+    old_weight       = float(old_weight_r[0]) if old_weight_r else None
+    load_score       = float(old_load_r[0])   if old_load_r   else 0.5
+    old_days         = int(old_days_r[0])      if old_days_r   else 0
+
+    # New weight: full recency (visit just happened → days_since_visit = 0)
+    new_recency      = 1.0
+    new_weight       = round((1 - load_score) * new_recency, 4)
+
+    # --- Update edge ---
     run_query(gc,
         f"g.V('{safe(asha_id)}').outE('assigned_to')"
         f".where(inV().has('id', '{safe(patient_id)}'))"
         f".property('days_since_visit', 0)"
+        f".property('weight', {new_weight})"
     )
-    publish_event(producer, "dose_confirmed", asha_id, patient_id,
-                  {"days_missed_reset": True, "silence_cleared": True})
-    print(f"  [Writeback] dose_confirmed: {patient_id}")
 
-def writeback_dose_missed(gc, producer, patient_id: str, asha_id: str):
-    """ASHA tapped Could Not Visit. Increments silence_days."""
-    result   = run_query(gc, f"g.V('{safe(patient_id)}').values('silence_days')")
-    new_days = (int(result[0]) if result else 0) + 1
+    delta = {
+        "patient_id":       patient_id,
+        "asha_id":          asha_id,
+        "change":           "dose_confirmed",
+        "edge_weight_old":  old_weight,
+        "edge_weight_new":  new_weight,
+        "days_since_visit_old": old_days,
+        "days_since_visit_new": 0,
+        "load_score":       load_score,
+        "node_changes":     {"days_missed": "→ 0", "silence": "→ false", "silence_days": "→ 0"},
+    }
+    publish_event(producer, "dose_confirmed", asha_id, patient_id,
+                  {"days_missed_reset": True, "silence_cleared": True,
+                   "edge_weight_old": old_weight, "edge_weight_new": new_weight})
+    print(f"  [Writeback] dose_confirmed: {patient_id} | edge weight {old_weight} → {new_weight}")
+    return delta
+
+def writeback_dose_missed(gc, producer, patient_id: str, asha_id: str) -> dict:
+    """
+    ASHA tapped Could Not Visit.
+    Increments silence_days on patient node.
+    Increments days_since_visit and decays edge weight (recency drops).
+    Returns a delta dict describing what changed in the graph.
+    NOTE: does NOT touch BBN ORs — only unconfirmed visit status.
+    """
+    # --- Patient node ---
+    sil_r     = run_query(gc, f"g.V(\'{safe(patient_id)}\').values(\'silence_days\')")
+    new_sdays = (int(sil_r[0]) if sil_r else 0) + 1
     run_query(gc,
-        f"g.V('{safe(patient_id)}')"
-        f".property('silence_days', {new_days})"
-        f".property('silence',      true)"
+        f"g.V(\'{safe(patient_id)}\')"
+        f".property(\'silence_days\', {new_sdays})"
+        f".property(\'silence\',      true)"
     )
+
+    # --- Read current edge state ---
+    old_weight_r = run_query(gc,
+        f"g.V(\'{safe(asha_id)}\').outE(\'assigned_to\')"
+        f".where(inV().has(\'id\', \'{safe(patient_id)}\'))"
+        f".values(\'weight\')"
+    )
+    old_load_r   = run_query(gc,
+        f"g.V(\'{safe(asha_id)}\').outE(\'assigned_to\')"
+        f".where(inV().has(\'id\', \'{safe(patient_id)}\'))"
+        f".values(\'load_score\')"
+    )
+    old_days_r   = run_query(gc,
+        f"g.V(\'{safe(asha_id)}\').outE(\'assigned_to\')"
+        f".where(inV().has(\'id\', \'{safe(patient_id)}\'))"
+        f".values(\'days_since_visit\')"
+    )
+    old_weight   = float(old_weight_r[0]) if old_weight_r else None
+    load_score   = float(old_load_r[0])   if old_load_r   else 0.5
+    old_days     = int(old_days_r[0])     if old_days_r   else 0
+
+    # Recalculate weight with decayed recency
+    new_days     = old_days + 1
+    new_recency  = max(0.0, 1.0 - new_days / 30.0)
+    new_weight   = round((1 - load_score) * new_recency, 4)
+
+    # --- Update edge ---
+    run_query(gc,
+        f"g.V(\'{safe(asha_id)}\').outE(\'assigned_to\')"
+        f".where(inV().has(\'id\', \'{safe(patient_id)}\'))"
+        f".property(\'days_since_visit\', {new_days})"
+        f".property(\'weight\', {new_weight})"
+    )
+
+    delta = {
+        "patient_id":           patient_id,
+        "asha_id":              asha_id,
+        "change":               "dose_missed",
+        "edge_weight_old":      old_weight,
+        "edge_weight_new":      new_weight,
+        "days_since_visit_old": old_days,
+        "days_since_visit_new": new_days,
+        "load_score":           load_score,
+        "node_changes":         {"silence_days": f"-> {new_sdays}", "silence": "-> true"},
+    }
     publish_event(producer, "dose_missed", asha_id, patient_id,
-                  {"silence_days": new_days})
-    print(f"  [Writeback] dose_missed: {patient_id} silence_days={new_days}")
+                  {"silence_days": new_sdays,
+                   "edge_weight_old": old_weight, "edge_weight_new": new_weight})
+    print(f"  [Writeback] dose_missed: {patient_id} silence_days={new_sdays} | edge weight {old_weight} -> {new_weight}")
+    return delta
 
 def writeback_contact_screened(gc, producer, patient_id: str,
                                 contact_name: str, asha_id: str):
@@ -684,6 +770,619 @@ def promote_contact_to_patient(gc, producer, contact_name: str,
                   {"contact_name": contact_name})
     print(f"  [Promote] {contact_name} → {new_pid} (from {source_patient_id})")
     return new_pid
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NER ON SINGLE NOTE — runs at end-of-day batch or via Azure Function trigger
+# ─────────────────────────────────────────────────────────────────────────────
+
+def run_ner_on_note(note: str, patient_id: str, lc=None) -> dict:
+    """
+    Run NER on a single free-text ASHA note.
+    Returns structured extraction result used by writeback functions.
+
+    Extracts:
+      - contacts: [{name, age, rel, has_symptom, symptom}]
+      - intents:  {dose_confirmed, dose_missed, patient_reluctance,
+                   new_symptom_in_contact, welfare_issue, side_effect}
+      - raw_note: original text (stored on patient node for audit)
+
+    Uses Azure AI Language if configured, falls back to rule-based extraction.
+    Rule-based is good enough for the clinical phrases ASHA workers actually use.
+    """
+    contacts = []
+    intents  = extract_update_intent(lc, note)
+
+    # Azure NER path
+    if lc:
+        raw_contacts = extract_contacts_from_note(lc, note)
+        for c in raw_contacts:
+            name = c.get("name", "")
+            if not name:
+                continue
+            # Infer relationship from surrounding text
+            note_lower = note.lower()
+            rel = "Household"
+            for workplace_word in ["coworker", "colleague", "works", "factory", "tannery", "market"]:
+                if workplace_word in note_lower:
+                    rel = "Workplace"
+                    break
+            # Detect symptom on this contact
+            has_symptom = False
+            symptom     = None
+            name_idx    = note_lower.find(name.lower())
+            snippet     = note_lower[max(0, name_idx - 30):name_idx + 80]
+            for s in ["coughing", "cough", "fever", "blood", "weight loss", "night sweat"]:
+                if s in snippet:
+                    has_symptom = True
+                    symptom     = s
+                    break
+            contacts.append({
+                "name":        name,
+                "age":         _parse_age_from_note(note, name),
+                "rel":         rel,
+                "has_symptom": has_symptom,
+                "symptom":     symptom,
+                "confidence":  c.get("confidence", 0.8),
+            })
+    else:
+        # Rule-based fallback — covers common ASHA note patterns
+        contacts = _rule_based_contact_extract(note)
+
+    # Extended intents not in the original extract_update_intent
+    n = note.lower()
+    intents["welfare_issue"]  = any(w in n for w in ["poshan", "payment", "money", "allowance", "not received"])
+    intents["side_effect"]    = any(w in n for w in ["side effect", "vomiting", "nausea", "rash", "pain"])
+    intents["needs_screening"]= any(w in n for w in ["coughing", "cough", "fever", "symptoms", "unwell"])
+
+    return {
+        "patient_id": patient_id,
+        "raw_note":   note,
+        "contacts":   contacts,
+        "intents":    intents,
+        "processed_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _parse_age_from_note(note: str, name: str) -> int:
+    """Extract age near a person's name from a note. Returns 35 as default."""
+    import re
+    name_idx = note.lower().find(name.lower())
+    snippet  = note[max(0, name_idx):name_idx + 60]
+    match    = re.search(r'(\d{1,2})', snippet)
+    if match:
+        age = int(match.group(1))
+        if 1 <= age <= 99:
+            return age
+    return 35
+
+
+def _rule_based_contact_extract(note: str) -> list:
+    """
+    Rule-based NER fallback. Handles common patterns like:
+      'wife Meena (42) has been coughing'
+      'son Karthik (16) at home'
+      'mother-in-law (68) has fever'
+    """
+    import re
+    contacts  = []
+    note_low  = note.lower()
+
+    rel_keywords = {
+        "wife": "Household", "husband": "Household", "mother": "Household",
+        "father": "Household", "son": "Household", "daughter": "Household",
+        "brother": "Household", "sister": "Household", "uncle": "Household",
+        "aunt": "Household", "grandmother": "Household", "grandfather": "Household",
+        "coworker": "Workplace", "colleague": "Workplace",
+    }
+    symptom_words = ["coughing", "cough", "fever", "blood", "weight loss",
+                     "night sweat", "unwell", "sick", "breathless"]
+
+    # Pattern: [rel] [Name] ([age])  OR  [rel] ([age])
+    name_pattern = re.compile(
+        r'(wife|husband|mother|father|son|daughter|brother|sister|uncle|aunt|'
+        r'grandmother|grandfather|coworker|colleague)'
+        r'(?:\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)?))?\s*(?:\((\d{1,2})\))?',
+        re.IGNORECASE
+    )
+    for m in name_pattern.finditer(note):
+        rel_word = m.group(1).lower()
+        name     = m.group(2) or rel_word.title()
+        age_str  = m.group(3)
+        age      = int(age_str) if age_str else 35
+        rel      = rel_keywords.get(rel_word, "Household")
+
+        # Check for symptom in ±60 chars around this match
+        start    = max(0, m.start() - 20)
+        end      = min(len(note), m.end() + 60)
+        snippet  = note_low[start:end]
+        has_sym  = any(s in snippet for s in symptom_words)
+        symptom  = next((s for s in symptom_words if s in snippet), None)
+
+        contacts.append({
+            "name":        name,
+            "age":         age,
+            "rel":         rel,
+            "has_symptom": has_sym,
+            "symptom":     symptom,
+            "confidence":  0.75,
+        })
+
+    return contacts
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WRITEBACK: NEW CONTACT FROM NOTE
+# Adds or updates a contact node + edge in the graph based on NER extraction.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def writeback_new_contact(gc, producer, patient_id: str, asha_id: str,
+                           contact: dict, district: str) -> dict:
+    """
+    Upsert a contact node extracted from an ASHA note into the graph.
+    If the contact already exists (by name), update their vulnerability score.
+    Always upserts the household_contact / workplace_contact edge.
+
+    contact dict: {name, age, rel, has_symptom, symptom, confidence}
+
+    Returns a delta dict describing what was added/updated.
+    """
+    name  = contact["name"]
+    age   = contact.get("age", 35)
+    rel   = contact.get("rel", "Household")
+    vuln  = 1.5 if age < 10 or age > 60 else 1.0
+    # Symptom in a contact = high transmission risk → bump vulnerability
+    if contact.get("has_symptom"):
+        vuln = min(vuln * 1.8, 3.0)
+
+    cid       = f"CONTACT_{safe(name).replace(' ','_').replace('.','')}"
+    edge_label = "household_contact" if rel == "Household" else "workplace_contact"
+    base_w     = 0.9 if rel == "Household" else 0.6
+    edge_w     = round(base_w * vuln, 4)
+    decay      = 0.02 if rel == "Household" else 0.05
+
+    # Upsert contact node — pk ONLY in addV() branch, never on update branch
+    run_query(gc,
+        f"g.V('{safe(cid)}').fold().coalesce("
+        f"unfold()"
+        f".property('name',           '{safe(name)}')"
+        f".property('age',            {age})"
+        f".property('vulnerability',  {vuln})"
+        f".property('rel',            '{safe(rel)}')"
+        f".property('screened',       false)"
+        f".property('note_sourced',   true)"
+        f".property('has_symptom',    {str(contact.get('has_symptom', False)).lower()})"
+        f".property('symptom',        '{safe(contact.get('symptom') or '')}')"
+        f".property('source_patient', '{safe(patient_id)}'),"
+        f"addV('contact')"
+        f".property('id',             '{safe(cid)}')"
+        f".property('pk',             '{safe(district)}')"
+        f".property('name',           '{safe(name)}')"
+        f".property('age',            {age})"
+        f".property('vulnerability',  {vuln})"
+        f".property('rel',            '{safe(rel)}')"
+        f".property('screened',       false)"
+        f".property('note_sourced',   true)"
+        f".property('has_symptom',    {str(contact.get('has_symptom', False)).lower()})"
+        f".property('symptom',        '{safe(contact.get('symptom') or '')}')"
+        f".property('source_patient', '{safe(patient_id)}')"
+        f".property('district',       '{safe(district)}')"
+        f")"
+    )
+
+    # Upsert edge patient → contact
+    # .to() must be closed before .property() calls — Cosmos Gremlin requirement
+    run_query(gc,
+        f"g.V('{safe(patient_id)}').outE('{edge_label}')"
+        f".where(inV().hasId('{safe(cid)}')).fold().coalesce("
+        f"unfold()"
+        f".property('weight',                    {edge_w})"
+        f".property('last_interaction_days_ago', 0)"
+        f".property('note_sourced',              true),"
+        f"g.V('{safe(patient_id)}').addE('{edge_label}')"
+        f".to(g.V('{safe(cid)}'))"
+        f".property('weight',                    {edge_w})"
+        f".property('base_weight',               {base_w})"
+        f".property('last_interaction_days_ago', 0)"
+        f".property('decay_rate',                {decay})"
+        f".property('note_sourced',              true)"
+        f")"
+    )
+
+    publish_event(producer, edge_label, patient_id, cid, {
+        "weight":       edge_w,
+        "note_sourced": True,
+        "has_symptom":  contact.get("has_symptom", False),
+    })
+
+    delta = {
+        "change":      "contact_added_from_note",
+        "contact_id":  cid,
+        "contact_name":name,
+        "age":         age,
+        "rel":         rel,
+        "edge_label":  edge_label,
+        "edge_weight": edge_w,
+        "has_symptom": contact.get("has_symptom", False),
+        "symptom":     contact.get("symptom"),
+        "vulnerability_score": vuln,
+    }
+    print(f"  [Writeback] new contact from note: {name} ({rel}, age {age}) "
+          f"→ {patient_id} | edge={edge_label} w={edge_w}"
+          f"{' ⚠ HAS SYMPTOM: ' + str(contact.get('symptom')) if contact.get('has_symptom') else ''}")
+    return delta
+
+
+def writeback_symptom_flag(gc, producer, patient_id: str, contact_name: str,
+                            symptom: str) -> dict:
+    """
+    Flag a symptom on an existing contact node.
+    Boosts vulnerability score → raises edge weight → propagates via PageRank.
+    Called when note says 'wife has been coughing' for an already-known contact.
+    """
+    cid = f"CONTACT_{safe(contact_name).replace(' ','_').replace('.','')}"
+
+    # Read current vulnerability
+    vuln_r = run_query(gc, f"g.V('{safe(cid)}').values('vulnerability')")
+    old_vuln = float(vuln_r[0]) if vuln_r else 1.0
+    new_vuln = round(min(old_vuln * 1.8, 3.0), 4)
+
+    run_query(gc,
+        f"g.V('{safe(cid)}')"
+        f".property('has_symptom',  true)"
+        f".property('symptom',      '{safe(symptom)}')"
+        f".property('vulnerability', {new_vuln})"
+        f".property('screened',     false)"
+    )
+
+    # Recalculate edge weight from patient → this contact
+    for edge_label in ["household_contact", "workplace_contact"]:
+        old_w_r = run_query(gc,
+            f"g.V('{safe(patient_id)}').outE('{edge_label}')"
+            f".where(inV().hasId('{safe(cid)}')).values('base_weight')"
+        )
+        if old_w_r:
+            base_w  = float(old_w_r[0])
+            new_w   = round(base_w * new_vuln, 4)
+            run_query(gc,
+                f"g.V('{safe(patient_id)}').outE('{edge_label}')"
+                f".where(inV().hasId('{safe(cid)}')).property('weight', {new_w})"
+            )
+            publish_event(producer, "symptom_flagged_on_contact", patient_id, cid, {
+                "symptom":      symptom,
+                "old_vuln":     old_vuln,
+                "new_vuln":     new_vuln,
+                "new_edge_w":   new_w,
+            })
+            print(f"  [Writeback] symptom '{symptom}' on {contact_name} "
+                  f"| vuln {old_vuln} → {new_vuln} | edge weight → {new_w}")
+            return {
+                "change":       "symptom_flagged",
+                "contact_name": contact_name,
+                "contact_id":   cid,
+                "symptom":      symptom,
+                "vuln_old":     old_vuln,
+                "vuln_new":     new_vuln,
+            }
+
+    return {"change": "symptom_flagged_no_edge", "contact_name": contact_name}
+
+
+def writeback_note_to_patient(gc, producer, patient_id: str,
+                               note: str, asha_id: str):
+    """
+    Append the ASHA note to the patient node as a timestamped audit field.
+    Also updates free_text_note — picked up by NER on next pipeline run.
+    """
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
+    note_key  = f"note_{timestamp}"
+    # Cosmos DB Gremlin: store note as a property with a unique key suffix
+    run_query(gc,
+        f"g.V('{safe(patient_id)}')"
+        f".property('{note_key}', '{safe(note[:500])}')"  # cap at 500 chars
+        f".property('last_note_at', '{timestamp}')"
+        f".property('asha_id', '{safe(asha_id)}')"
+    )
+    publish_event(producer, "note_written", asha_id, patient_id,
+                  {"note_preview": note[:100], "timestamp": timestamp})
+    print(f"  [Writeback] note stored on {patient_id}: '{note[:60]}...'")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OVERNIGHT BATCH PROCESSOR
+# Called once per day (by Azure Function timer or main.py --overnight flag).
+# Reads all pending notes, runs NER, applies all graph writebacks, rescores.
+# ─────────────────────────────────────────────────────────────────────────────
+
+PENDING_NOTES_FILE = "data/pending_notes.json"
+
+
+def queue_note_for_overnight(patient_id: str, asha_id: str,
+                              note: str, action: str = "free_text"):
+    """
+    Append a note to the overnight processing queue.
+    Called immediately when ASHA submits a note — no NER runs yet.
+    NER runs at end of day in process_overnight_notes().
+    """
+    from pathlib import Path
+    Path("data").mkdir(exist_ok=True)
+
+    pending = []
+    if Path(PENDING_NOTES_FILE).exists():
+        with open(PENDING_NOTES_FILE) as f:
+            pending = json.load(f)
+
+    pending.append({
+        "patient_id":  patient_id,
+        "asha_id":     asha_id,
+        "note":        note,
+        "action":      action,
+        "queued_at":   datetime.now(timezone.utc).isoformat(),
+        "processed":   False,
+    })
+
+    with open(PENDING_NOTES_FILE, "w") as f:
+        json.dump(pending, f, indent=2)
+    print(f"  [Queue] Note queued for overnight NER: {patient_id} — '{note[:50]}...'")
+
+
+def process_overnight_notes(gc, producer, json_path: str = "nikshay_scored_dataset.json") -> dict:
+    """
+    End-of-day batch processor. Runs NER on all pending ASHA notes and
+    applies graph writebacks. Called by Azure Function timer at 22:00 IST
+    or by main.py --overnight.
+
+    For each note:
+      1. Run NER → extract contacts + intents
+      2. writeback_note_to_patient() — store note on patient node
+      3. For each new contact → writeback_new_contact()
+      4. For symptomatic contacts → writeback_symptom_flag()
+      5. For dose_confirmed intent → writeback_dose_confirmed()
+      6. Rescore patient locally → update JSON
+      7. Mark note as processed
+
+    Returns a summary dict for display in the Officer dashboard.
+    """
+    from pathlib import Path
+    from stage3_score import (compute_bbn_prior, compose_final_score,
+                               apply_urgency_multiplier, assign_risk_tier,
+                               get_adaptive_thresholds)
+
+    if not Path(PENDING_NOTES_FILE).exists():
+        print("  [Overnight] No pending notes file found.")
+        return {"processed": 0, "graph_deltas": [], "errors": []}
+
+    with open(PENDING_NOTES_FILE) as f:
+        pending = json.load(f)
+
+    unprocessed = [n for n in pending if not n.get("processed")]
+    if not unprocessed:
+        print("  [Overnight] No unprocessed notes.")
+        return {"processed": 0, "graph_deltas": [], "errors": []}
+
+    print(f"  [Overnight] Processing {len(unprocessed)} pending notes...")
+
+    # Load patient JSON for local rescore
+    patients_json = Path(json_path)
+    if not patients_json.exists():
+        patients_json = Path("data") / json_path
+    all_patients = []
+    if patients_json.exists():
+        with open(patients_json, encoding="utf-8") as f:
+            all_patients = json.load(f)
+    patient_map = {p["patient_id"]: p for p in all_patients}
+
+    lc          = get_language_client()
+    graph_deltas = []
+    errors       = []
+
+    for entry in unprocessed:
+        pid    = entry["patient_id"]
+        asha   = entry["asha_id"]
+        note   = entry["note"]
+        action = entry.get("action", "free_text")
+
+        try:
+            # 1 — NER
+            ner_result = run_ner_on_note(note, pid, lc)
+            intents    = ner_result["intents"]
+            contacts   = ner_result["contacts"]
+
+            deltas_for_note = {
+                "patient_id":    pid,
+                "asha_id":       asha,
+                "note_preview":  note[:80],
+                "processed_at":  datetime.now(timezone.utc).isoformat(),
+                "contacts_added": [],
+                "symptoms_flagged": [],
+                "dose_update":   None,
+                "score_change":  None,
+            }
+
+            # 2 — Store note on patient node in graph
+            if gc:
+                writeback_note_to_patient(gc, producer, pid, note, asha)
+
+            # 3+4 — Process extracted contacts
+            patient_record = patient_map.get(pid, {})
+            district = patient_record.get("location", {}).get("district", "Chennai")
+
+            for contact in contacts:
+                # Check if contact already known
+                existing_contacts = patient_record.get("contact_network", [])
+                known_names = {c["name"].lower() for c in existing_contacts}
+                is_known = contact["name"].lower() in known_names
+
+                if is_known and contact.get("has_symptom"):
+                    # Contact known + new symptom → symptom flag only
+                    if gc:
+                        delta = writeback_symptom_flag(
+                            gc, producer, pid, contact["name"], contact["symptom"]
+                        )
+                    else:
+                        delta = {"change": "symptom_flagged_offline",
+                                 "contact_name": contact["name"],
+                                 "symptom": contact["symptom"]}
+                    deltas_for_note["symptoms_flagged"].append(delta)
+
+                    # Update local JSON contact too
+                    for c in patient_record.get("contact_network", []):
+                        if c["name"].lower() == contact["name"].lower():
+                            c["has_symptom"]    = True
+                            c["symptom"]        = contact["symptom"]
+                            c["vulnerability_score"] = min(
+                                c.get("vulnerability_score", 1.0) * 1.8, 3.0
+                            )
+                            break
+
+                elif not is_known:
+                    # Brand new contact from note → add to graph + local JSON
+                    if gc:
+                        delta = writeback_new_contact(
+                            gc, producer, pid, asha, contact, district
+                        )
+                    else:
+                        delta = {
+                            "change":       "contact_added_offline",
+                            "contact_name": contact["name"],
+                            "rel":          contact.get("rel", "Household"),
+                            "has_symptom":  contact.get("has_symptom", False),
+                            "symptom":      contact.get("symptom"),
+                        }
+                    deltas_for_note["contacts_added"].append(delta)
+
+                    # Add to local JSON contact_network
+                    if patient_record:
+                        patient_record.setdefault("contact_network", []).append({
+                            "name":              contact["name"],
+                            "age":               contact.get("age", 35),
+                            "rel":               contact.get("rel", "Household"),
+                            "has_comorbidity":   False,
+                            "vulnerability_score": min(
+                                (1.5 if contact.get("age", 35) < 10 or contact.get("age", 35) > 60 else 1.0)
+                                * (1.8 if contact.get("has_symptom") else 1.0), 3.0
+                            ),
+                            "screened":          False,
+                            "note_sourced":      True,
+                            "symptom":           contact.get("symptom"),
+                        })
+
+            # 5 — Dose confirmed from note intent
+            if intents.get("dose_confirmed") and action != "could_not_visit":
+                if gc:
+                    dose_delta = writeback_dose_confirmed(gc, producer, pid, asha)
+                else:
+                    dose_delta = {"change": "dose_confirmed_offline"}
+                if patient_record:
+                    patient_record["adherence"]["days_since_last_dose"] = 0
+                    patient_record["operational"]["last_asha_visit_days_ago"] = 0
+                deltas_for_note["dose_update"] = "dose_confirmed"
+
+            elif intents.get("dose_missed") or action == "could_not_visit":
+                if gc:
+                    writeback_dose_missed(gc, producer, pid, asha)
+                if patient_record:
+                    patient_record["operational"]["last_asha_visit_days_ago"] = (
+                        patient_record["operational"].get("last_asha_visit_days_ago", 0) + 1
+                    )
+                deltas_for_note["dose_update"] = "dose_missed"
+
+            # 6 — Rescore patient with updated contact network and clinical data
+            if patient_record:
+                old_score = patient_record.get("risk_score", 0)
+                old_tier  = patient_record.get("risk_level", "?")
+
+                bbn_result  = compute_bbn_prior(patient_record)
+                bbn_score   = bbn_result["score"]
+                tgn_score   = patient_record.get("tgn_score", bbn_score)
+                asha_load   = patient_record.get("asha_load_score", 0.3)
+
+                # Contact network risk adjustment — applied to TGN component
+                # since TGN captures graph structure. Each symptomatic household contact
+                # adds transmission risk that would appear in TGN on a full rerun.
+                contact_risk_delta = 0.0
+                for c in deltas_for_note.get("contacts_added", []):
+                    if c.get("has_symptom"):
+                        contact_risk_delta += 0.08 if c.get("edge_label") == "household_contact" else 0.04
+                    else:
+                        contact_risk_delta += 0.02 if c.get("edge_label") == "household_contact" else 0.01
+                for s in deltas_for_note.get("symptoms_flagged", []):
+                    contact_risk_delta += 0.08
+
+                adjusted_tgn = min(tgn_score + contact_risk_delta, 1.0)
+                if contact_risk_delta > 0:
+                    print(f"  [Overnight] Contact risk adjustment for {pid}: "
+                          f"tgn {tgn_score:.3f} → {adjusted_tgn:.3f} "
+                          f"(+{contact_risk_delta:.3f} from {len(deltas_for_note.get('contacts_added',[]))} new contacts, "
+                          f"{len(deltas_for_note.get('symptoms_flagged',[]))} symptom flags)")
+
+                composition = compose_final_score(adjusted_tgn, bbn_score, asha_load)
+                week        = min(patient_record["clinical"]["total_treatment_days"] // 7, 26)
+                new_score   = apply_urgency_multiplier(composition["composite_score"], week)
+                new_tier    = assign_risk_tier(new_score, week)
+                patient_record["tgn_score"] = adjusted_tgn
+
+                patient_record["previous_risk_score"] = old_score
+                patient_record["risk_score"]           = new_score
+                patient_record["risk_level"]           = new_tier
+                patient_record["risk_velocity"]        = round(new_score - old_score, 4)
+                patient_record["score_composition"]    = composition
+
+                # Write score back to graph node
+                if gc:
+                    writeback_risk_scores(gc, [patient_record])
+
+                deltas_for_note["score_change"] = {
+                    "old_score": round(old_score, 3),
+                    "new_score": round(new_score, 3),
+                    "old_tier":  old_tier,
+                    "new_tier":  new_tier,
+                    "changed":   old_tier != new_tier,
+                }
+
+            graph_deltas.append(deltas_for_note)
+            entry["processed"]    = True
+            entry["processed_at"] = datetime.now(timezone.utc).isoformat()
+            entry["ner_result"]   = {
+                "contacts_found": len(contacts),
+                "intents":        intents,
+            }
+
+        except Exception as e:
+            errors.append({"patient_id": pid, "error": str(e)})
+            print(f"  [Overnight] ERROR processing {pid}: {e}")
+
+    # Save updated patient JSON
+    if all_patients and patients_json.exists():
+        with open(patients_json, "w", encoding="utf-8") as f:
+            json.dump(all_patients, f, indent=2)
+        print(f"  [Overnight] Updated {patients_json} with rescored patients")
+
+    # Mark notes as processed
+    with open(PENDING_NOTES_FILE, "w") as f:
+        json.dump(pending, f, indent=2)
+
+    tier_changes    = sum(1 for d in graph_deltas if d.get("score_change", {}).get("changed"))
+    contacts_added  = sum(len(d.get("contacts_added", [])) for d in graph_deltas)
+    symptoms_flagged= sum(len(d.get("symptoms_flagged", [])) for d in graph_deltas)
+
+    print(f"\n  [Overnight] Complete:")
+    print(f"    Notes processed:   {len(graph_deltas)}")
+    print(f"    New contacts:      {contacts_added}")
+    print(f"    Symptoms flagged:  {symptoms_flagged}")
+    print(f"    Tier changes:      {tier_changes}")
+    print(f"    Errors:            {len(errors)}")
+
+    return {
+        "processed":        len(graph_deltas),
+        "contacts_added":   contacts_added,
+        "symptoms_flagged": symptoms_flagged,
+        "tier_changes":     tier_changes,
+        "errors":           errors,
+        "graph_deltas":     graph_deltas,
+        "run_at":           datetime.now(timezone.utc).isoformat(),
+    }
 
 
 def process_asha_reply(gc, producer, message_text: str,

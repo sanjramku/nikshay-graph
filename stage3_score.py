@@ -65,6 +65,8 @@ def compute_bbn_prior(record: dict) -> dict:
     Active during Phase 1 (prototype) and early Phase 2 (pilot).
     Automatically fades as TGN accumulates real evidence.
     """
+    # Use learned ORs if available, otherwise fall back to literature values
+    effective_log_or = get_effective_log_ors()
     lo = BASELINE_LOG_ODDS
     factors = {}
 
@@ -72,66 +74,66 @@ def compute_bbn_prior(record: dict) -> dict:
                      record["social"], record["adherence"], record["operational"])
 
     if s.get("alcohol_use"):
-        lo += LOG_OR["alcohol_use"]
-        factors["Alcohol use"] = round(np.exp(LOG_OR["alcohol_use"]), 2)
+        lo += effective_log_or["alcohol_use"]
+        factors["Alcohol use"] = round(np.exp(effective_log_or["alcohol_use"]), 2)
     if d.get("marital") == "Divorced":
-        lo += LOG_OR["divorced_separated"]
-        factors["Divorced/separated"] = round(np.exp(LOG_OR["divorced_separated"]), 2)
+        lo += effective_log_or["divorced_separated"]
+        factors["Divorced/separated"] = round(np.exp(effective_log_or["divorced_separated"]), 2)
     if c["comorbidities"].get("diabetes"):
-        lo += LOG_OR["diabetes"]
-        factors["Diabetes (monitored — protective)"] = round(np.exp(LOG_OR["diabetes"]), 2)
+        lo += effective_log_or["diabetes"]
+        factors["Diabetes (monitored — protective)"] = round(np.exp(effective_log_or["diabetes"]), 2)
     if c["comorbidities"].get("hiv"):
-        lo += LOG_OR["hiv"]
-        factors["HIV co-infection"] = round(np.exp(LOG_OR["hiv"]), 2)
+        lo += effective_log_or["hiv"]
+        factors["HIV co-infection"] = round(np.exp(effective_log_or["hiv"]), 2)
     if a.get("prior_lfu_history"):
-        lo += LOG_OR["prior_tb"]
-        factors["Prior LTFU/TB history"] = round(np.exp(LOG_OR["prior_tb"]), 2)
+        lo += effective_log_or["prior_tb"]
+        factors["Prior LTFU/TB history"] = round(np.exp(effective_log_or["prior_tb"]), 2)
     if d.get("gender") == "Male":
-        lo += LOG_OR["male_sex"]
-        factors["Male sex"] = round(np.exp(LOG_OR["male_sex"]), 2)
+        lo += effective_log_or["male_sex"]
+        factors["Male sex"] = round(np.exp(effective_log_or["male_sex"]), 2)
     if s.get("low_education"):
-        lo += LOG_OR["low_education"]
-        factors["Low education"] = round(np.exp(LOG_OR["low_education"]), 2)
+        lo += effective_log_or["low_education"]
+        factors["Low education"] = round(np.exp(effective_log_or["low_education"]), 2)
     if s.get("drug_use"):
-        lo += LOG_OR["drug_use"]
-        factors["Drug use"] = round(np.exp(LOG_OR["drug_use"]), 2)
+        lo += effective_log_or["drug_use"]
+        factors["Drug use"] = round(np.exp(effective_log_or["drug_use"]), 2)
     if c.get("phase") == "Continuation":
-        lo += LOG_OR["continuation_phase"]
-        factors["Continuation phase"] = round(np.exp(LOG_OR["continuation_phase"]), 2)
+        lo += effective_log_or["continuation_phase"]
+        factors["Continuation phase"] = round(np.exp(effective_log_or["continuation_phase"]), 2)
     if not o.get("nutritional_support"):
-        lo += LOG_OR["no_nutritional_support"]
-        factors["No nutritional support"] = round(np.exp(LOG_OR["no_nutritional_support"]), 2)
+        lo += effective_log_or["no_nutritional_support"]
+        factors["No nutritional support"] = round(np.exp(effective_log_or["no_nutritional_support"]), 2)
     if not o.get("welfare_enrolled", True):  # NPY non-enrollment
-        lo += LOG_OR["no_welfare"]
-        factors["Not enrolled in Nikshay Poshan Yojana"] = round(np.exp(LOG_OR["no_welfare"]), 2)
+        lo += effective_log_or["no_welfare"]
+        factors["Not enrolled in Nikshay Poshan Yojana"] = round(np.exp(effective_log_or["no_welfare"]), 2)
     c_data = record["clinical"]
     if c_data.get("regimen") == "DR_TB":
-        lo += LOG_OR["dr_tb"]
-        factors["Drug-resistant TB (DR-TB)"] = round(np.exp(LOG_OR["dr_tb"]), 2)
+        lo += effective_log_or["dr_tb"]
+        factors["Drug-resistant TB (DR-TB)"] = round(np.exp(effective_log_or["dr_tb"]), 2)
 
     dist = a.get("distance_to_center_km", 0)
     if 5 <= dist < 10:
-        lo += LOG_OR["distance_5_to_10km"]
-        factors[f"Distance {dist:.1f}km (5-10km)"] = round(np.exp(LOG_OR["distance_5_to_10km"]), 2)
+        lo += effective_log_or["distance_5_to_10km"]
+        factors[f"Distance {dist:.1f}km (5-10km)"] = round(np.exp(effective_log_or["distance_5_to_10km"]), 2)
     elif dist >= 10:
-        lo += LOG_OR["distance_over_10km"]
-        factors[f"Distance {dist:.1f}km (>10km)"] = round(np.exp(LOG_OR["distance_over_10km"]), 2)
+        lo += effective_log_or["distance_over_10km"]
+        factors[f"Distance {dist:.1f}km (>10km)"] = round(np.exp(effective_log_or["distance_over_10km"]), 2)
 
     missed = a.get("days_since_last_dose", 0)
     if 7 <= missed < 14:
-        lo += LOG_OR["missed_7_to_13_days"]
-        factors[f"{missed} days since last dose"] = round(np.exp(LOG_OR["missed_7_to_13_days"]), 2)
+        lo += effective_log_or["missed_7_to_13_days"]
+        factors[f"{missed} days since last dose"] = round(np.exp(effective_log_or["missed_7_to_13_days"]), 2)
     elif missed >= 14:
-        lo += LOG_OR["missed_14_plus_days"]
-        factors[f"{missed} days since last dose (CRITICAL)"] = round(np.exp(LOG_OR["missed_14_plus_days"]), 2)
+        lo += effective_log_or["missed_14_plus_days"]
+        factors[f"{missed} days since last dose (CRITICAL)"] = round(np.exp(effective_log_or["missed_14_plus_days"]), 2)
 
     age = d.get("age", 30)
     if 20 <= age <= 39:
-        lo += LOG_OR["age_20_to_39"]
-        factors[f"Age {age} (high-risk group 20-39)"] = round(np.exp(LOG_OR["age_20_to_39"]), 2)
+        lo += effective_log_or["age_20_to_39"]
+        factors[f"Age {age} (high-risk group 20-39)"] = round(np.exp(effective_log_or["age_20_to_39"]), 2)
     elif age > 60:
-        lo += LOG_OR["age_over_60"]
-        factors[f"Age {age} (elderly)"] = round(np.exp(LOG_OR["age_over_60"]), 2)
+        lo += effective_log_or["age_over_60"]
+        factors[f"Age {age} (elderly)"] = round(np.exp(effective_log_or["age_over_60"]), 2)
 
     prob = float(np.clip(1 / (1 + np.exp(-lo)), 0.0, 1.0))
     return {"score": round(prob, 4), "all_factors": factors}
@@ -176,11 +178,13 @@ def compose_final_score(tgn_score: float, bbn_score: float, asha_load: float,
     Final risk score = weighted combination of three components.
 
     Component         | Weight at 0 cases | Weight at 200 cases
-    TGN output        | 0.60              | 0.80
+    TGN output        | 0.40              | 0.80
     BBN prior         | 0.40 → fading     | 0.00 → retired
     ASHA load score   | 0.20 (permanent)  | 0.20 (permanent)
 
-    Note: weights are normalised to sum to 1.0.
+    Note: weights always sum to 1.0.
+    TGN starts at 40% (not 60%) because BBN holds 40% at prototype stage.
+    As real cases accumulate, BBN fades and TGN grows to 80%.
     """
     bbn_weight  = get_bbn_weight(confirmed_cases)
     tgn_weight  = 1.0 - bbn_weight - 0.20
@@ -306,6 +310,7 @@ def score_all_patients(patients: list, tgn_scores: dict = None,
         p["risk_velocity"]       = risk_velocity
         p["composite_score"]     = composition["composite_score"]
         p["risk_level"]          = risk_tier
+        p["tgn_score"]           = tgn_score   # saved so overnight rescore can reuse it
         p["treatment_week"]      = treatment_week
         p["score_composition"]   = composition
         p["thresholds"]          = thresholds
@@ -441,6 +446,384 @@ def detect_systemic_failures(patients: list) -> list:
             print(f"  [{a['escalate_to']}] {a['message'][:90]}...")
 
     return alerts
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CONFIRMED DROPOUT TRACKING & BAYESIAN OR UPDATE
+# ─────────────────────────────────────────────────────────────────────────────
+
+CONFIRMED_DROPOUTS_FILE = "data/confirmed_dropouts.json"
+LEARNED_ORS_FILE        = "data/learned_ors.json"
+BBN_SCHEDULE_FILE       = "data/bbn_update_schedule.json"
+
+PRIOR_WEIGHT            = 20      # literature equivalent to ~20 real observations
+MIN_CASES_TO_UPDATE     = 15      # never update an OR with fewer than this many cases
+MAX_MOVE_PER_CYCLE      = 0.50    # OR cannot shift more than 50% of current value in one cycle
+
+# How often the BBN weights are allowed to change.
+# Options: "monthly", "quarterly", "biannual", "annual"
+# The update runs at pipeline STARTUP, before any patient is scored.
+# Mid-run updates are never allowed — every patient in a run uses identical weights.
+BBN_UPDATE_FREQUENCY    = "biannual"   # default: every 6 months
+
+_FREQUENCY_DAYS = {
+    "monthly":   30,
+    "quarterly": 91,
+    "biannual":  182,
+    "annual":    365,
+}
+
+
+def load_confirmed_dropouts() -> dict:
+    """
+    Load confirmed dropout records from disk.
+    Returns dict: {patient_id: {factors: {...}, confirmed_at: iso_timestamp}}
+    Creates the file if missing.
+    """
+    from pathlib import Path
+    Path("data").mkdir(exist_ok=True)
+    if Path(CONFIRMED_DROPOUTS_FILE).exists():
+        with open(CONFIRMED_DROPOUTS_FILE) as f:
+            return json.load(f)
+    return {}
+
+
+def save_confirmed_dropout(patient_id: str, factors: dict):
+    """
+    Persist a single confirmed dropout record to disk.
+
+    IMPORTANT — this function NEVER triggers a weight update.
+    Weight updates only happen through check_and_run_scheduled_update(),
+    which is called once at pipeline startup before any patient is scored.
+    This guarantees every patient in a pipeline run is evaluated with
+    exactly the same OR weights — no mid-run inconsistency.
+    """
+    from datetime import datetime, timezone
+    dropouts = load_confirmed_dropouts()
+    if patient_id in dropouts:
+        print(f"  [BBN] {patient_id} already recorded — skipping duplicate")
+        return
+    dropouts[patient_id] = {
+        "factors":            factors,
+        "confirmed_at":       datetime.now(timezone.utc).isoformat(),
+        "included_in_update": False,
+    }
+    with open(CONFIRMED_DROPOUTS_FILE, "w") as f:
+        json.dump(dropouts, f, indent=2)
+    new_pending = sum(1 for v in dropouts.values() if not v.get("included_in_update"))
+    print(f"  [BBN] Confirmed dropout recorded: {patient_id} "
+          f"({len(dropouts)} total, {new_pending} pending next cycle)")
+
+
+
+
+def load_bbn_schedule() -> dict:
+    """
+    Load the BBN update schedule metadata.
+    Returns dict with last_update_date and next_due_date.
+    Creates a default schedule (due immediately) if no file exists.
+    """
+    from pathlib import Path
+    from datetime import datetime, timezone, timedelta
+    if Path(BBN_SCHEDULE_FILE).exists():
+        with open(BBN_SCHEDULE_FILE) as f:
+            return json.load(f)
+    # First run — schedule is due immediately so the system initialises correctly
+    now = datetime.now(timezone.utc)
+    return {
+        "last_update_date":  None,
+        "next_due_date":     now.isoformat(),
+        "frequency":         BBN_UPDATE_FREQUENCY,
+        "cycles_completed":  0,
+    }
+
+
+def save_bbn_schedule(schedule: dict):
+    """Write the updated schedule to disk after a successful cycle."""
+    from pathlib import Path
+    Path("data").mkdir(exist_ok=True)
+    with open(BBN_SCHEDULE_FILE, "w") as f:
+        json.dump(schedule, f, indent=2)
+
+
+def is_update_due(schedule: dict = None) -> tuple:
+    """
+    Check whether the BBN update cycle is due.
+
+    Returns (is_due: bool, reason: str).
+
+    The cycle is due when:
+      - It has never run before (no last_update_date), OR
+      - The current date is on or after next_due_date
+
+    The cycle is NOT due when:
+      - The pipeline was already run today (same calendar day), OR
+      - The next due date is in the future
+
+    This means if you run the pipeline 10 times in one day, the weights
+    only update on the first run that day. All subsequent runs that day
+    use the weights that were locked in at the start of that first run.
+    """
+    from datetime import datetime, timezone
+    if schedule is None:
+        schedule = load_bbn_schedule()
+
+    now = datetime.now(timezone.utc)
+
+    if schedule.get("last_update_date") is None:
+        return True, "First run — initialising BBN schedule"
+
+    next_due_str = schedule.get("next_due_date")
+    if not next_due_str:
+        return True, "No next_due_date recorded — running update"
+
+    next_due = datetime.fromisoformat(next_due_str)
+
+    if now >= next_due:
+        days_overdue = (now - next_due).days
+        return True, (
+            f"Update due ({schedule.get('frequency', BBN_UPDATE_FREQUENCY)} cycle). "
+            f"Last ran: {schedule.get('last_update_date', 'never')[:10]}. "
+            f"Overdue by {days_overdue} days."
+        )
+
+    days_remaining = (next_due - now).days
+    return False, (
+        f"BBN weights current. Next update due: {next_due_str[:10]} "
+        f"({days_remaining} days). Frequency: {schedule.get('frequency', BBN_UPDATE_FREQUENCY)}."
+    )
+
+
+def check_and_run_scheduled_update(frequency: str = None) -> dict:
+    """
+    Call this ONCE at pipeline startup, before score_all_patients() runs.
+
+    Checks whether the calendar-based update cycle is due.
+    If due AND enough cases exist: runs the update, locks new weights to disk.
+    If not due OR too few cases: does nothing — current weights stay.
+
+    Either way, score_all_patients() then reads whatever is in learned_ors.json
+    and every patient in the run uses exactly the same weights.
+
+    Args:
+        frequency: override BBN_UPDATE_FREQUENCY (for testing). One of:
+                   "monthly", "quarterly", "biannual", "annual"
+
+    Returns dict with keys:
+        update_ran      : bool
+        reason          : str — why update ran or was skipped
+        weights_source  : "learned" | "literature" | "updated"
+        new_cases_used  : int
+        next_due_date   : str (ISO)
+    """
+    from datetime import datetime, timezone, timedelta
+    from pathlib import Path
+
+    freq     = frequency or BBN_UPDATE_FREQUENCY
+    freq_key = freq if freq in _FREQUENCY_DAYS else "biannual"
+    interval = _FREQUENCY_DAYS[freq_key]
+
+    schedule     = load_bbn_schedule()
+    due, reason  = is_update_due(schedule)
+
+    print(f"  [BBN Schedule] {reason}")
+
+    if not due:
+        # Weights unchanged — determine source for reporting
+        from pathlib import Path
+        source = "learned" if Path(LEARNED_ORS_FILE).exists() else "literature"
+        return {
+            "update_ran":    False,
+            "reason":        reason,
+            "weights_source": source,
+            "new_cases_used": 0,
+            "next_due_date": schedule.get("next_due_date", ""),
+        }
+
+    # Update is due — check whether enough cases exist
+    dropouts  = load_confirmed_dropouts()
+    new_cases = [v for v in dropouts.values() if not v.get("included_in_update")]
+
+    if len(new_cases) < MIN_CASES_TO_UPDATE:
+        reason_skip = (
+            f"Update due but only {len(new_cases)} new confirmed cases "
+            f"(minimum {MIN_CASES_TO_UPDATE}). Weights unchanged until next cycle."
+        )
+        print(f"  [BBN Schedule] {reason_skip}")
+        # Still advance the schedule so we check again next period
+        _advance_schedule(schedule, freq_key, interval)
+        return {
+            "update_ran":     False,
+            "reason":         reason_skip,
+            "weights_source": "learned" if Path(LEARNED_ORS_FILE).exists() else "literature",
+            "new_cases_used": 0,
+            "next_due_date":  schedule.get("next_due_date", ""),
+        }
+
+    # Run the update
+    print(f"  [BBN Schedule] Running update with {len(new_cases)} new cases...")
+    run_bbn_update_cycle(dropouts)
+
+    # Advance schedule
+    _advance_schedule(schedule, freq_key, interval)
+
+    return {
+        "update_ran":     True,
+        "reason":         f"Scheduled {freq_key} update ran — {len(new_cases)} cases processed",
+        "weights_source": "updated",
+        "new_cases_used": len(new_cases),
+        "next_due_date":  schedule.get("next_due_date", ""),
+    }
+
+
+def _advance_schedule(schedule: dict, freq_key: str, interval_days: int):
+    """Update the schedule after a cycle (whether update ran or was skipped)."""
+    from datetime import datetime, timezone, timedelta
+    now      = datetime.now(timezone.utc)
+    next_due = now + timedelta(days=interval_days)
+    schedule["last_update_date"] = now.isoformat()
+    schedule["next_due_date"]    = next_due.isoformat()
+    schedule["frequency"]        = freq_key
+    schedule["cycles_completed"] = schedule.get("cycles_completed", 0) + 1
+    save_bbn_schedule(schedule)
+    print(f"  [BBN Schedule] Next update scheduled: {next_due.strftime('%Y-%m-%d')} "
+          f"({freq_key}, {interval_days} days)")
+
+
+def load_learned_ors() -> dict:
+    """
+    Load the latest learned OR values.
+    Falls back to the hardcoded literature values if no learned file exists.
+    """
+    from pathlib import Path
+    if Path(LEARNED_ORS_FILE).exists():
+        with open(LEARNED_ORS_FILE) as f:
+            data = json.load(f)
+            return data.get("ors", {})
+    # Return literature defaults as starting point
+    return {k: float(np.exp(v)) for k, v in LOG_OR.items()}
+
+
+def run_bbn_update_cycle(dropouts: dict = None):
+    """
+    Bayesian OR update — runs on a batch of confirmed dropouts.
+
+    For each risk factor, computes:
+        observed_OR = (dropouts_with_factor / total_with_factor)
+                    / (dropouts_without_factor / total_without_factor)
+
+        updated_OR = (prior_OR * PRIOR_WEIGHT + observed_OR * n_cases)
+                   / (PRIOR_WEIGHT + n_cases)
+
+    OR cannot move more than MAX_MOVE_PER_CYCLE (50%) per cycle.
+    Factors with fewer than MIN_CASES_TO_UPDATE cases are frozen.
+
+    Saves results to data/learned_ors.json and marks cases as processed.
+    """
+    from datetime import datetime, timezone
+    if dropouts is None:
+        dropouts = load_confirmed_dropouts()
+
+    new_cases = [v for v in dropouts.values() if not v.get("included_in_update")]
+    if len(new_cases) < 10:
+        print(f"  [BBN Update] Only {len(new_cases)} new cases — minimum 10 required. Skipping.")
+        return
+
+    # Load current ORs (literature or previously learned)
+    current_ors = load_learned_ors()
+    update_log  = {}
+
+    # Factor name → column in the factors dict (matches keys from compute_bbn_prior)
+    factor_map = {
+        "alcohol_use":            "Alcohol use",
+        "divorced_separated":     "Divorced/separated",
+        "hiv":                    "HIV co-infection",
+        "prior_tb":               "Prior LTFU/TB history",
+        "drug_use":               "Drug use",
+        "continuation_phase":     "Continuation phase",
+        "no_nutritional_support": "No nutritional support",
+        "no_welfare":             "Not enrolled in Nikshay Poshan Yojana",
+        "dr_tb":                  "Drug-resistant TB (DR-TB)",
+        "low_education":          "Low education",
+        "male_sex":               "Male sex",
+    }
+
+    n_total = len(new_cases)
+
+    for factor_key, factor_label in factor_map.items():
+        lit_or     = float(np.exp(LOG_OR.get(factor_key, 0)))
+        current_or = current_ors.get(factor_key, lit_or)
+
+        cases_with    = sum(1 for c in new_cases if factor_label in c.get("factors", {}))
+        cases_without = n_total - cases_with
+
+        if cases_with < MIN_CASES_TO_UPDATE:
+            update_log[factor_key] = f"FROZEN ({cases_with} cases with factor < {MIN_CASES_TO_UPDATE} minimum)"
+            continue
+
+        # Observed OR: how often this factor appeared in real dropouts vs not
+        # Guard against division by zero
+        p_with    = cases_with    / max(n_total, 1)
+        p_without = cases_without / max(n_total, 1)
+        if p_without == 0:
+            observed_or = current_or  # can't compute meaningfully
+        else:
+            observed_or = p_with / p_without
+
+        # Weighted Bayesian average
+        updated_or = (
+            (current_or * PRIOR_WEIGHT) + (observed_or * n_total)
+        ) / (PRIOR_WEIGHT + n_total)
+
+        # Sanity clamp: OR can't move more than 50% in one cycle
+        max_move   = current_or * MAX_MOVE_PER_CYCLE
+        updated_or = max(current_or - max_move, min(current_or + max_move, updated_or))
+        updated_or = round(max(0.1, updated_or), 4)  # OR can't go below 0.1
+
+        update_log[factor_key] = (
+            f"lit={lit_or:.3f} → prev={current_or:.3f} → updated={updated_or:.3f} "
+            f"({cases_with}/{n_total} cases with factor)"
+        )
+        current_ors[factor_key] = updated_or
+
+    # Mark all processed cases
+    for pid in dropouts:
+        if not dropouts[pid].get("included_in_update"):
+            dropouts[pid]["included_in_update"] = True
+    with open(CONFIRMED_DROPOUTS_FILE, "w") as f:
+        json.dump(dropouts, f, indent=2)
+
+    # Save learned ORs
+    from pathlib import Path
+    Path("data").mkdir(exist_ok=True)
+    with open(LEARNED_ORS_FILE, "w") as f:
+        json.dump({
+            "ors":          current_ors,
+            "updated_at":   datetime.now(timezone.utc).isoformat(),
+            "cases_used":   n_total,
+            "total_confirmed": len(dropouts),
+            "update_log":   update_log,
+        }, f, indent=2)
+
+    print(f"\n  [BBN Update] OR update complete — {n_total} new cases processed")
+    for k, v in update_log.items():
+        print(f"    {k}: {v}")
+    print(f"  Saved → {LEARNED_ORS_FILE}")
+
+
+def get_effective_log_ors() -> dict:
+    """
+    Return the current effective log-OR dict.
+    Uses learned values if available, falls back to literature values.
+    Called by compute_bbn_prior() so the BBN automatically uses updated weights.
+    """
+    learned = load_learned_ors()
+    result  = dict(LOG_OR)  # start from literature
+    for k in result:
+        if k in learned:
+            result[k] = np.log(max(0.01, learned[k]))
+    return result
 
 
 if __name__ == "__main__":
