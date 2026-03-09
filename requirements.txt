@@ -3,13 +3,11 @@ faker
 numpy
 gremlinpython
 azure-ai-textanalytics
-azure-communication-sms
 azure-eventhub
+azure-functions
 azure-cognitiveservices-speech
 networkx
 streamlit
 pandas
 plotly
-torch
-torch-geometric
 requests

@@ -1,320 +1,291 @@
 """
-function_app.py — Nikshay-Graph Azure Functions
-================================================
-
+Nikshay-Graph — Azure Functions (Python v2 programming model)
+=============================================================
 Two functions:
 
-1. nikshay_note_ingestor  [Event Hubs trigger]
-   Fires whenever an ASHA submits a note or action via the dashboard.
-   Queues the note for overnight NER — does NOT run NER immediately.
-   This keeps the dashboard responsive (no 2-second NER delay per tap).
+  1. nikshay_overnight_processor  — Timer trigger, runs daily at 22:00 IST (16:30 UTC)
+     Full pipeline: silence detection → TGN inference → scoring → PageRank →
+     explanations → ASHA voice briefings.
+     Saves nikshay_scored_dataset.json + agent3_output.json + briefings_output.json
+     for the Streamlit dashboard to pick up.
 
-2. nikshay_overnight_processor  [Timer trigger — 22:00 IST daily]
-   Runs NER on all queued notes from the day.
-   Updates graph nodes and edges in Cosmos DB.
-   Rescores affected patients.
-   Saves results to data/overnight_results.json for the dashboard to read.
-   The next morning's briefings are generated AFTER this runs.
+  2. nikshay_note_ingestor  — Event Hub trigger on graph-events hub.
+     Fires when ASHA submits a free-text note from the dashboard.
+     Runs NER, queues contact extraction, updates graph edge weights.
+     Does NOT touch BBN ORs — those are schedule-gated only.
 
-Deployment:
-    az functionapp create \
-        --resource-group nikshaydbgraph \
-        --name nikshay-pipeline-func \
-        --storage-account nikshaydbgraph8a14 \
-        --runtime python \
-        --runtime-version 3.12 \
-        --functions-version 4 \
-        --os-type linux
-
-    az functionapp config appsettings set \
-        --name nikshay-pipeline-func \
-        --resource-group nikshaydbgraph \
-        --settings @env_settings.json
-
-Environment variables required (same as .env):
-    EVENTHUB_CONNECTION_STRING
-    EVENTHUB_NAME
-    COSMOS_ENDPOINT
-    COSMOS_DATABASE
-    COSMOS_GRAPH
-    COSMOS_KEY
-    LANGUAGE_ENDPOINT
-    LANGUAGE_KEY
-    SPEECH_KEY
-    SPEECH_REGION
-    TRANSLATOR_KEY
-    TRANSLATOR_REGION
+DEPLOYMENT NOTES:
+  - Runtime: Python 3.12, Functions v4
+  - This file must be at the repo ROOT (same level as app.py, main.py)
+  - requirements.txt at repo root must include azure-functions
 """
 
 import azure.functions as func
-import json
 import logging
+import json
 import os
-from datetime import datetime, timezone
+import sys
 
-app = func.FunctionApp()
+# Make all pipeline modules importable (they live at repo root)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# FUNCTION 1 — Event Hubs trigger: queue every ASHA action for overnight NER
-# Fires on every event published by the dashboard (_reply_event in app.py)
-# ─────────────────────────────────────────────────────────────────────────────
-
-@app.event_hub_message_trigger(
-    arg_name="event",
-    event_hub_name="%EVENTHUB_NAME%",
-    connection="EVENTHUB_CONNECTION_STRING",
-    cardinality="many",          # batch mode — processes multiple events per call
-    consumer_group="$Default",
-)
-def nikshay_note_ingestor(event: func.EventHubEvent) -> None:
-    """
-    Receives ASHA actions from Event Hubs.
-    Routes them based on event_type:
-      - dose_confirmed / dose_missed → immediate writeback to Cosmos DB
-        (these are time-critical — done instantly, not queued overnight)
-      - free_text_update → queued for overnight NER
-      - contact_screened → immediate writeback
-      - issue_flagged    → logged for District Officer
-
-    Why immediate for dose actions?
-    Dose confirmation changes the patient's silence status. If we wait until
-    22:00 to process it, the dashboard shows wrong silence counts all day.
-    NER on free text is expensive and not time-critical — overnight is fine.
-    """
-    try:
-        body = event.get_body().decode("utf-8")
-        payload = json.loads(body)
-    except Exception as e:
-        logging.error(f"[Ingestor] Failed to parse event: {e}")
-        return
-
-    event_type = payload.get("event_type", "")
-    patient_id = payload.get("target_node", payload.get("features", {}).get("patient_id", ""))
-    source_id  = payload.get("source_node", "")
-    features   = payload.get("features", {})
-
-    logging.info(f"[Ingestor] Received: {event_type} | patient={patient_id} | source={source_id}")
-
-    # Get graph client
-    gc, producer = _get_clients()
-
-    try:
-        if event_type == "dose_confirmed":
-            # Immediate — resets silence, updates edge weight
-            from stage1_nlp import writeback_dose_confirmed
-            delta = writeback_dose_confirmed(gc, producer, patient_id, source_id)
-            logging.info(f"[Ingestor] dose_confirmed writeback: {delta}")
-
-        elif event_type == "dose_missed":
-            # Immediate — increments silence_days, decays edge weight
-            from stage1_nlp import writeback_dose_missed
-            delta = writeback_dose_missed(gc, producer, patient_id, source_id)
-            logging.info(f"[Ingestor] dose_missed writeback: {delta}")
-
-        elif event_type == "contact_screened":
-            # Immediate — sets contact.screened = true in graph
-            from stage1_nlp import writeback_contact_screened
-            contact_name = features.get("contact_name", "")
-            writeback_contact_screened(gc, producer, patient_id, contact_name, source_id)
-            logging.info(f"[Ingestor] contact_screened: {contact_name}")
-
-        elif event_type == "free_text_update":
-            # Queue for overnight NER — not immediate
-            note = features.get("text", "")
-            if note:
-                from stage1_nlp import queue_note_for_overnight
-                queue_note_for_overnight(
-                    patient_id=patient_id,
-                    asha_id=source_id,
-                    note=note,
-                    action="free_text",
-                )
-                logging.info(f"[Ingestor] Note queued for overnight: {patient_id} — '{note[:50]}'")
-            else:
-                logging.warning(f"[Ingestor] free_text_update with empty text — skipped")
-
-        elif event_type == "issue_flagged":
-            # Log for District Officer — no graph change needed
-            logging.info(
-                f"[Ingestor] Issue flagged by {source_id} for patient {patient_id}. "
-                f"District Officer will see this in their dashboard."
-            )
-
-        else:
-            logging.info(f"[Ingestor] Unhandled event_type: {event_type} — logged only")
-
-    except Exception as e:
-        logging.error(f"[Ingestor] Error processing {event_type} for {patient_id}: {e}", exc_info=True)
-
-    finally:
-        if producer:
-            try:
-                producer.close()
-            except Exception:
-                pass
+app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# FUNCTION 2 — Timer trigger: overnight batch NER + graph update + rescore
-# Runs at 22:00 IST (16:30 UTC) every day
-# After this runs, main.py --briefings generates the next morning's briefings
+# FUNCTION 1 — Overnight pipeline
+# Timer: every day at 22:00 IST = 16:30 UTC
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.timer_trigger(
-    arg_name="timer",
-    schedule="0 30 16 * * *",   # 22:00 IST = 16:30 UTC, every day
-    run_on_startup=False,        # don't run on deploy — only on schedule
-    use_monitor=True,            # prevents duplicate runs if function restarts
+    schedule="0 30 16 * * *",
+    arg_name="myTimer",
+    run_on_startup=False,
+    use_monitor=False,
 )
-def nikshay_overnight_processor(timer: func.TimerRequest) -> None:
+def nikshay_overnight_processor(myTimer: func.TimerRequest) -> None:
     """
-    End-of-day NER batch processor.
+    Nightly full pipeline run.
 
-    Sequence:
-    1. Load all pending notes from data/pending_notes.json
-    2. For each note:
-       a. Run NER → extract contacts + intents
-       b. writeback_note_to_patient() — store note on patient node
-       c. writeback_new_contact() — add any new contacts + edges
-       d. writeback_symptom_flag() — boost vulnerability on symptomatic contacts
-       e. Rescore patient → writeback_risk_scores()
-    3. Save summary to data/overnight_results.json
-    4. Clear processed notes from queue
-    5. Trigger morning briefing generation for updated patients
+    What this touches in the graph:
+      - Patient node: days_missed, silence, silence_days, risk_score, memory_vector
+      - ASHA→Patient edge: weight, days_since_visit, load_score  (via writeback_*)
+      - BBN OR update: ONLY if check_and_run_scheduled_update() decides it's due
+        (schedule-gated — not triggered by ASHA worker actions, only confirmed
+         dropouts from the District Officer tab feed into this)
 
-    ASHA workers get their updated briefings the next morning.
-    The briefing will mention new contacts found from their notes.
+    What this does NOT touch:
+      - confirmed_dropouts.json — Officer-only action from the dashboard
+      - BBN ORs directly — only via the schedule gate
     """
-    if timer.past_due:
-        logging.warning("[Overnight] Timer is past due — running now but may be delayed")
-
-    run_start = datetime.now(timezone.utc)
-    logging.info(f"[Overnight] Starting at {run_start.isoformat()}")
-
-    gc, producer = _get_clients()
+    if myTimer.past_due:
+        logging.info("Timer is past due — running immediately.")
+    logging.info("Nikshay overnight processor started.")
 
     try:
-        from stage1_nlp import process_overnight_notes
-        results = process_overnight_notes(gc, producer)
+        from dotenv import load_dotenv
+        load_dotenv()
 
-        logging.info(
-            f"[Overnight] Complete — "
-            f"processed={results['processed']} "
-            f"contacts_added={results['contacts_added']} "
-            f"symptoms_flagged={results['symptoms_flagged']} "
-            f"tier_changes={results['tier_changes']} "
-            f"errors={len(results['errors'])}"
-        )
-
-        # Save results for dashboard to display
-        _save_overnight_results(results, run_start)
-
-        # If any patients were rescored, regenerate morning briefings
-        if results["processed"] > 0:
-            _regenerate_briefings(results["graph_deltas"])
-
-    except Exception as e:
-        logging.error(f"[Overnight] Fatal error: {e}", exc_info=True)
-        _save_overnight_results({"error": str(e), "processed": 0}, run_start)
-
-    finally:
-        if producer:
-            try:
-                producer.close()
-            except Exception:
-                pass
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# HELPERS
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _get_clients():
-    """Return (gremlin_client, eventhub_producer). Either may be None if not configured."""
-    gc = None
-    producer = None
-    try:
+        # ── Imports ────────────────────────────────────────────────────────
         from cosmos_client import get_client, health_check
-        if health_check():
-            gc = get_client()
-    except Exception as e:
-        logging.warning(f"[Clients] Cosmos DB unavailable: {e}")
+        from stage1_nlp   import (get_eventhub_producer, build_asha_summaries,
+                                   inject_silence_events, ingest_all)
+        from stage2_tgn   import run_tgn_inference
+        from stage3_score import (score_all_patients, detect_systemic_failures,
+                                   check_and_run_scheduled_update)
+        from stage4_explain import get_patient_visit_list, get_contact_screening_list
+        from stage5_voice  import run_morning_briefings
+        import networkx as nx
 
-    try:
-        from stage1_nlp import get_eventhub_producer
-        producer = get_eventhub_producer()
-    except Exception as e:
-        logging.warning(f"[Clients] Event Hubs unavailable: {e}")
+        # ── Resolve data directory ─────────────────────────────────────────
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        data_dir = os.path.join(base_dir, "data")
+        os.makedirs(data_dir, exist_ok=True)
 
-    return gc, producer
-
-
-def _save_overnight_results(results: dict, run_start: datetime):
-    """
-    Persist overnight results to disk.
-    The Officer dashboard reads this to show what the overnight run changed.
-    """
-    import os
-    from pathlib import Path
-    Path("data").mkdir(exist_ok=True)
-    results["run_start"] = run_start.isoformat()
-    results["run_end"]   = datetime.now(timezone.utc).isoformat()
-
-    with open("data/overnight_results.json", "w") as f:
-        json.dump(results, f, indent=2)
-    logging.info("[Overnight] Results saved to data/overnight_results.json")
-
-
-def _regenerate_briefings(graph_deltas: list):
-    """
-    Regenerate morning briefings for ASHA workers whose patients were updated.
-    Called at the end of the overnight processor so workers get fresh briefings
-    with contacts found from their notes included.
-    """
-    try:
-        import json as _json
-        from pathlib import Path
-
-        # Load the scored dataset (updated by overnight processor)
-        scored_path = Path("nikshay_scored_dataset.json")
-        if not scored_path.exists():
-            logging.warning("[Briefings] nikshay_scored_dataset.json not found — skipping")
+        # ── Load patient dataset ───────────────────────────────────────────
+        dataset_path = os.path.join(data_dir, "nikshay_grounded_dataset.json")
+        if not os.path.exists(dataset_path):
+            # Fallback: try root
+            dataset_path = os.path.join(base_dir, "nikshay_grounded_dataset.json")
+        if not os.path.exists(dataset_path):
+            logging.error("Dataset not found. Commit data/nikshay_grounded_dataset.json.")
             return
 
-        with open(scored_path) as f:
-            patients = _json.load(f)
+        with open(dataset_path, encoding="utf-8") as f:
+            patients = json.load(f)
+        logging.info(f"Loaded {len(patients)} patient records.")
 
-        # Only regenerate briefings for ASHAs whose patients changed
-        affected_pids  = {d["patient_id"] for d in graph_deltas}
-        affected_ashas = {
-            p["operational"]["asha_id"]
-            for p in patients
-            if p["patient_id"] in affected_pids
+        # ── Cosmos DB ──────────────────────────────────────────────────────
+        gc = None
+        try:
+            if health_check():
+                gc = get_client()
+                logging.info("Cosmos DB: connected.")
+        except Exception as e:
+            logging.warning(f"Cosmos DB unavailable — offline run. ({e})")
+
+        # ── Event Hubs ─────────────────────────────────────────────────────
+        producer = None
+        try:
+            producer = get_eventhub_producer()
+        except Exception as e:
+            logging.warning(f"Event Hubs unavailable — events skipped. ({e})")
+
+        # ── BBN schedule gate ──────────────────────────────────────────────
+        # The ONLY place BBN ORs are updated.
+        # ASHA worker updates (dose/visit actions) never touch ORs.
+        try:
+            result = check_and_run_scheduled_update()
+            logging.info(f"BBN schedule: {result.get('status', 'checked')}")
+        except Exception as e:
+            logging.warning(f"BBN schedule check failed (non-fatal): {e}")
+
+        # ── Stage 1 ────────────────────────────────────────────────────────
+        asha_summaries = build_asha_summaries(patients)
+        inject_silence_events(patients, producer)
+        if gc:
+            ingest_all(gc, producer, patients, asha_summaries)
+        logging.info("Stage 1 complete.")
+
+        # ── Stage 2 ────────────────────────────────────────────────────────
+        tgn_scores, attention_weights = run_tgn_inference(patients, gc=gc)
+        logging.info(f"Stage 2 complete. {len(tgn_scores)} patients scored.")
+
+        # ── Stage 3 ────────────────────────────────────────────────────────
+        patients = score_all_patients(patients, tgn_scores, asha_summaries)
+        systemic_alerts = detect_systemic_failures(patients)
+        logging.info(f"Stage 3 complete. Systemic alerts: {len(systemic_alerts)}")
+
+        # Persist scored dataset
+        scored_path = os.path.join(data_dir, "nikshay_scored_dataset.json")
+        with open(scored_path, "w", encoding="utf-8") as f:
+            json.dump(patients, f, indent=2, default=str)
+
+        # ── Stage 3b — PageRank ────────────────────────────────────────────
+        G = nx.Graph()
+        for p in patients:
+            pid = p["patient_id"]
+            G.add_node(pid, node_type="patient",
+                       risk_score=p.get("risk_score", 0))
+            for c in p.get("contact_network", []):
+                cid = f"CONTACT_{c['name'].replace(' ', '_')}"
+                G.add_node(cid, node_type="contact",
+                           vulnerability=c.get("vulnerability_score", 1.0),
+                           screened=c.get("screened", False))
+                G.add_edge(pid, cid,
+                           weight=0.9 if c.get("rel") == "Household" else 0.6)
+
+        high_risk = {p["patient_id"]: p["risk_score"]
+                     for p in patients if p.get("risk_level") == "HIGH"}
+        personalization = {n: high_risk.get(n, 0.001) for n in G.nodes()}
+        try:
+            pagerank_scores = nx.pagerank(
+                G, alpha=0.85, personalization=personalization,
+                weight="weight", max_iter=200)
+        except Exception:
+            pagerank_scores = {}
+        logging.info(f"Stage 3b PageRank: {len(pagerank_scores)} nodes scored.")
+
+        # ── Stage 4 ────────────────────────────────────────────────────────
+        visit_list      = get_patient_visit_list(patients, top_n=10)
+        screening_list  = get_contact_screening_list(G, pagerank_scores, top_n=10)
+        agent3_output   = {
+            "visit_list":      visit_list,
+            "screening_list":  screening_list,
+            "systemic_alerts": systemic_alerts,
         }
-        logging.info(f"[Briefings] Regenerating for {len(affected_ashas)} ASHA workers: {affected_ashas}")
+        agent3_path = os.path.join(data_dir, "agent3_output.json")
+        with open(agent3_path, "w", encoding="utf-8") as f:
+            json.dump(agent3_output, f, indent=2, default=str)
+        logging.info("Stage 4 complete.")
 
-        # Load existing agent3 output for visit/screening lists
-        agent3_path = Path("agent3_output.json")
-        if not agent3_path.exists():
-            logging.warning("[Briefings] agent3_output.json not found — skipping briefing regen")
-            return
+        # ── Stage 5 ────────────────────────────────────────────────────────
+        try:
+            briefing_result = run_morning_briefings(
+                visit_list=visit_list,
+                screening_list=screening_list,
+                systemic_alerts=systemic_alerts,
+                patients=patients,
+            )
+            briefings_path = os.path.join(data_dir, "briefings_output.json")
+            with open(briefings_path, "w", encoding="utf-8") as f:
+                json.dump(briefing_result, f, indent=2, default=str)
+            logging.info(f"Stage 5 complete. "
+                         f"{len(briefing_result.get('asha_briefings', {}))} briefings.")
+        except Exception as e:
+            logging.warning(f"Stage 5 failed (non-fatal — dashboard still works): {e}")
 
-        with open(agent3_path) as f:
-            agent3 = _json.load(f)
-
-        from stage5_voice import run_morning_briefings
-        briefings = run_morning_briefings(
-            visit_list      = agent3.get("visit_list", []),
-            screening_list  = agent3.get("screening_list", []),
-            systemic_alerts = agent3.get("systemic_alerts", []),
-            patients        = patients,
-        )
-
-        with open("briefings_output.json", "w") as f:
-            _json.dump(briefings, f, indent=2)
-
-        logging.info("[Briefings] briefings_output.json regenerated with overnight updates")
+        logging.info("Overnight pipeline complete.")
 
     except Exception as e:
-        logging.error(f"[Briefings] Regeneration failed: {e}", exc_info=True)
+        logging.exception(f"Overnight pipeline FAILED: {e}")
+        raise
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FUNCTION 2 — ASHA note ingestor (Event Hub trigger)
+# Fires when ASHA submits a free-text note from the dashboard.
+# Runs NER → extracts contacts → updates graph edge weights.
+# Does NOT update BBN ORs.
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.event_hub_message_trigger(
+    arg_name="azeventhub",
+    event_hub_name="graph-events",
+    connection="EVENTHUB_CONNECTION_STRING",
+)
+def nikshay_note_ingestor(azeventhub: func.EventHubEvent) -> None:
+    """
+    Triggered by free_text_update events on the graph-events Event Hub.
+    Runs Azure AI Language NER on the note text.
+    Writes any new contact nodes and updates edge weights in Cosmos DB.
+
+    This is the async closure of the ASHA portal feedback loop:
+      ASHA types note → dashboard publishes event → this function fires →
+      NER extracts contacts → graph updated → next morning briefing reflects it.
+    """
+    logging.info("nikshay_note_ingestor triggered.")
+
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+
+        raw = azeventhub.get_body().decode("utf-8")
+        event = json.loads(raw)
+        logging.info(f"Event received: {event.get('event_type')} "
+                     f"| patient={event.get('target_node')} "
+                     f"| asha={event.get('source_node')}")
+
+        # Only process free-text notes — other event types are handled synchronously
+        if event.get("event_type") != "free_text_update":
+            logging.info(f"Skipping event type: {event.get('event_type')}")
+            return
+
+        note       = event.get("features", {}).get("text", "").strip()
+        patient_id = event.get("target_node", "")
+        asha_id    = event.get("source_node", "")
+
+        if not note or not patient_id:
+            logging.warning("Empty note or missing patient_id — skipping.")
+            return
+
+        from stage1_nlp   import (get_language_client, extract_contacts_from_note,
+                                   get_eventhub_producer, ingest_contact_edge,
+                                   publish_event)
+        from cosmos_client import get_client, health_check
+
+        lc = get_language_client()
+        contacts = extract_contacts_from_note(lc, note)
+        logging.info(f"NER extracted {len(contacts)} contacts from note.")
+
+        gc = None
+        try:
+            if health_check():
+                gc = get_client()
+        except Exception as e:
+            logging.warning(f"Cosmos DB unavailable — contacts not written. ({e})")
+
+        producer = None
+        try:
+            producer = get_eventhub_producer()
+        except Exception:
+            pass
+
+        if gc and contacts:
+            # Build a minimal patient record stub so ingest_contact_edge works
+            stub_record = {"patient_id": patient_id, "district": "Tondiarpet"}
+            for c in contacts:
+                cid = f"CONTACT_{c['name'].replace(' ', '_').replace('.', '')}"
+                ingest_contact_edge(gc, producer, stub_record, c, cid)
+                logging.info(f"  Contact edge written: {cid}")
+
+        # Publish a processed event back so the dashboard activity feed updates
+        if producer:
+            publish_event(producer, "note_processed", asha_id, patient_id,
+                          {"contacts_found": len(contacts), "source": "function"})
+
+        logging.info("nikshay_note_ingestor complete.")
+
+    except Exception as e:
+        logging.exception(f"nikshay_note_ingestor FAILED: {e}")
+        raise
